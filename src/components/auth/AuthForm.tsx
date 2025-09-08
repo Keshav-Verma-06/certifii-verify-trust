@@ -14,6 +14,7 @@ interface AuthFormProps {
 
 export function AuthForm({ onSuccess }: AuthFormProps) {
   const [isLoading, setIsLoading] = useState(false);
+  const [pendingVerificationEmail, setPendingVerificationEmail] = useState<string | null>(null);
   const [signUpData, setSignUpData] = useState({
     email: '',
     password: '',
@@ -84,12 +85,21 @@ export function AuthForm({ onSuccess }: AuthFormProps) {
       });
 
       if (error) {
-        if (error.message.includes('Invalid login credentials')) {
+        const message = (error.message || '').toLowerCase();
+        if (message.includes('invalid login credentials')) {
           toast({
             title: 'Invalid credentials',
             description: 'Please check your email and password.',
             variant: 'destructive'
           });
+        } else if (message.includes('email not confirmed') || message.includes('email_not_confirmed')) {
+          try {
+            setPendingVerificationEmail(signInData.email);
+            await supabase.auth.resend({ type: 'signup', email: signInData.email });
+            toast({ title: 'Verify your email', description: 'We sent you a new verification link. Please check your inbox.' });
+          } catch (resendError: any) {
+            toast({ title: 'Verification required', description: resendError?.message || 'Please verify your email before signing in.', variant: 'destructive' });
+          }
         } else {
           throw error;
         }
@@ -151,6 +161,33 @@ export function AuthForm({ onSuccess }: AuthFormProps) {
                     required
                   />
                 </div>
+                {pendingVerificationEmail ? (
+                  <div className="text-sm text-muted-foreground space-y-2">
+                    <p>
+                      Your email is not verified. We sent a new verification link to {pendingVerificationEmail}.
+                    </p>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="w-full"
+                      disabled={isLoading}
+                      onClick={async () => {
+                        if (!pendingVerificationEmail) return;
+                        try {
+                          setIsLoading(true);
+                          await supabase.auth.resend({ type: 'signup', email: pendingVerificationEmail });
+                          toast({ title: 'Link sent', description: 'Please check your inbox.' });
+                        } catch (err: any) {
+                          toast({ title: 'Could not resend', description: err?.message || 'Try again later.', variant: 'destructive' });
+                        } finally {
+                          setIsLoading(false);
+                        }
+                      }}
+                    >
+                      Resend verification email
+                    </Button>
+                  </div>
+                ) : null}
                 <Button type="submit" className="w-full" disabled={isLoading}>
                   {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                   Sign In

@@ -102,9 +102,31 @@ export const InstitutionPortal = () => {
     setUploadProgress(0);
 
     try {
+      // Get institution ID from the user's profile
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('institution_name')
+        .eq('user_id', institutionUser.id)
+        .single();
+
+      if (!profile?.institution_name) {
+        throw new Error('Institution not found for user');
+      }
+
+      // Get institution ID
+      const { data: institution } = await supabase
+        .from('institutions')
+        .select('id')
+        .eq('name', profile.institution_name)
+        .single();
+
+      if (!institution?.id) {
+        throw new Error('Institution ID not found');
+      }
+
       const formData = new FormData();
       formData.append('file', uploadFile);
-      formData.append('institution_id', institutionUser.institution_id || '');
+      formData.append('institution_id', institution.id);
 
       // Progress simulation
       const progressInterval = setInterval(() => {

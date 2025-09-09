@@ -1,21 +1,79 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Upload, CheckCircle, AlertCircle, FileSpreadsheet } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
+import { Upload, CheckCircle, AlertCircle, FileSpreadsheet, Copy, RefreshCw } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { InstitutionAuth } from "@/components/auth/InstitutionAuth";
+import { supabase } from "@/integrations/supabase/client";
 
 export const InstitutionPortal = () => {
   const [institutionUser, setInstitutionUser] = useState<any>(null);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadStatus, setUploadStatus] = useState<"idle" | "uploading" | "success" | "error">("idle");
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadSessions, setUploadSessions] = useState<any[]>([]);
+  const [apiKey, setApiKey] = useState<string>("");
+  const [generatingKey, setGeneratingKey] = useState(false);
   const { toast } = useToast();
 
   const handleAuthSuccess = (user: any) => {
     setInstitutionUser(user);
+    loadUploadSessions();
+    loadApiKey();
+  };
+
+  const loadUploadSessions = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('bulk_upload_sessions')
+        .select('*')
+        .order('created_at', { ascending: false });
+      
+      if (error) throw error;
+      setUploadSessions(data || []);
+    } catch (error) {
+      console.error('Error loading upload sessions:', error);
+    }
+  };
+
+  const loadApiKey = async () => {
+    // In a real implementation, you'd generate and store API keys per institution
+    // For now, we'll use a placeholder
+    setApiKey(`cv_live_sk_${Math.random().toString(36).substring(2, 15)}`);
+  };
+
+  const generateNewApiKey = async () => {
+    setGeneratingKey(true);
+    try {
+      // Simulate API key generation
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const newKey = `cv_live_sk_${Math.random().toString(36).substring(2, 15)}`;
+      setApiKey(newKey);
+      toast({
+        title: "API Key Generated",
+        description: "Your new API key has been generated successfully",
+      });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to generate new API key",
+        variant: "destructive",
+      });
+    } finally {
+      setGeneratingKey(false);
+    }
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    toast({
+      title: "Copied",
+      description: "Text copied to clipboard",
+    });
   };
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -37,19 +95,51 @@ export const InstitutionPortal = () => {
     }
   };
 
-  const handleBulkUpload = () => {
-    if (!uploadFile) return;
+  const handleBulkUpload = async () => {
+    if (!uploadFile || !institutionUser) return;
     
     setUploadStatus("uploading");
-    
-    // Simulate upload process
-    setTimeout(() => {
+    setUploadProgress(0);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', uploadFile);
+      formData.append('institution_id', institutionUser.institution_id || '');
+
+      // Progress simulation
+      const progressInterval = setInterval(() => {
+        setUploadProgress(prev => Math.min(prev + 10, 90));
+      }, 200);
+
+      const { data, error } = await supabase.functions.invoke('bulk-upload', {
+        body: formData
+      });
+
+      clearInterval(progressInterval);
+      setUploadProgress(100);
+
+      if (error) throw error;
+
       setUploadStatus("success");
+      loadUploadSessions(); // Refresh the sessions list
+      
       toast({
         title: "Upload successful",
-        description: "Certificate records have been processed and added to the database",
+        description: `Processed ${data.total_records} records: ${data.successful_records} successful, ${data.failed_records} failed`,
       });
-    }, 2000);
+
+      // Reset file after successful upload
+      setUploadFile(null);
+      
+    } catch (error: any) {
+      console.error('Upload error:', error);
+      setUploadStatus("error");
+      toast({
+        title: "Upload failed",
+        description: error.message || "Failed to process the upload",
+        variant: "destructive",
+      });
+    }
   };
 
   if (!institutionUser) {
@@ -139,6 +229,16 @@ export const InstitutionPortal = () => {
                   </div>
                 )}
 
+                {uploadStatus === "uploading" && (
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span>Processing...</span>
+                      <span>{uploadProgress}%</span>
+                    </div>
+                    <Progress value={uploadProgress} className="w-full" />
+                  </div>
+                )}
+
                 <Button 
                   onClick={handleBulkUpload}
                   disabled={!uploadFile || uploadStatus === "uploading"}
@@ -148,9 +248,16 @@ export const InstitutionPortal = () => {
                 </Button>
 
                 {uploadStatus === "success" && (
-                  <div className="flex items-center gap-2 text-success p-4 bg-success-light rounded-lg">
+                  <div className="flex items-center gap-2 text-success p-4 bg-success/10 rounded-lg">
                     <CheckCircle className="h-5 w-5" />
                     <span>Certificate records uploaded successfully!</span>
+                  </div>
+                )}
+
+                {uploadStatus === "error" && (
+                  <div className="flex items-center gap-2 text-destructive p-4 bg-destructive/10 rounded-lg">
+                    <AlertCircle className="h-5 w-5" />
+                    <span>Upload failed. Please try again.</span>
                   </div>
                 )}
               </div>
@@ -169,11 +276,17 @@ export const InstitutionPortal = () => {
                   <Label>API Endpoint</Label>
                   <div className="flex gap-2 mt-2">
                     <Input 
-                      value="https://api.certvalidator.gov.in/v1/certificates" 
+                      value={`https://tdkzbwmwmrabhynlxuuz.supabase.co/functions/v1/bulk-upload`}
                       readOnly 
                       className="bg-muted"
                     />
-                    <Button variant="outline" size="sm">Copy</Button>
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => copyToClipboard(`https://tdkzbwmwmrabhynlxuuz.supabase.co/functions/v1/bulk-upload`)}
+                    >
+                      <Copy className="h-4 w-4" />
+                    </Button>
                   </div>
                 </div>
 
@@ -181,12 +294,23 @@ export const InstitutionPortal = () => {
                   <Label>API Key</Label>
                   <div className="flex gap-2 mt-2">
                     <Input 
-                      value="cv_live_sk_xxxxxxxxxxxxxxxxxxxx" 
+                      value={apiKey} 
                       readOnly 
                       type="password"
                       className="bg-muted"
                     />
-                    <Button variant="outline" size="sm">Regenerate</Button>
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={generateNewApiKey}
+                      disabled={generatingKey}
+                    >
+                      {generatingKey ? (
+                        <RefreshCw className="h-4 w-4 animate-spin" />
+                      ) : (
+                        "Regenerate"
+                      )}
+                    </Button>
                   </div>
                 </div>
 
@@ -219,36 +343,61 @@ export const InstitutionPortal = () => {
               </p>
 
               <div className="space-y-4">
-                {[
-                  { file: "certificates_2024_batch1.csv", status: "completed", records: 1250, date: "2024-01-15" },
-                  { file: "certificates_2023_final.xlsx", status: "completed", records: 980, date: "2024-01-14" },
-                  { file: "certificates_2024_batch2.csv", status: "processing", records: 750, date: "2024-01-15" },
-                ].map((upload, index) => (
-                  <div key={index} className="flex items-center justify-between p-4 border rounded-lg">
-                    <div className="flex items-center gap-3">
-                      <FileSpreadsheet className="h-8 w-8 text-muted-foreground" />
-                      <div>
-                        <p className="font-medium">{upload.file}</p>
-                        <p className="text-sm text-muted-foreground">
-                          {upload.records} records • {upload.date}
-                        </p>
+                {uploadSessions.length === 0 ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <FileSpreadsheet className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                    <p>No upload sessions found</p>
+                    <p className="text-sm">Upload your first batch to see the status here</p>
+                  </div>
+                ) : (
+                  uploadSessions.map((session) => (
+                    <div key={session.id} className="flex items-center justify-between p-4 border rounded-lg">
+                      <div className="flex items-center gap-3">
+                        <FileSpreadsheet className="h-8 w-8 text-muted-foreground" />
+                        <div>
+                          <p className="font-medium">{session.file_name}</p>
+                          <p className="text-sm text-muted-foreground">
+                            {session.total_records} total • {session.successful_records} successful • {session.failed_records} failed
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {new Date(session.created_at).toLocaleDateString()}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex flex-col items-end gap-2">
+                        <div className="flex items-center gap-2">
+                          {session.status === "completed" ? (
+                            <span className="flex items-center gap-1 text-success">
+                              <CheckCircle className="h-4 w-4" />
+                              Completed
+                            </span>
+                          ) : session.status === "processing" ? (
+                            <span className="flex items-center gap-1 text-warning">
+                              <AlertCircle className="h-4 w-4" />
+                              Processing
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1 text-destructive">
+                              <AlertCircle className="h-4 w-4" />
+                              Error
+                            </span>
+                          )}
+                        </div>
+                        {session.status === "processing" && (
+                          <div className="w-32">
+                            <Progress 
+                              value={(session.processed_records / session.total_records) * 100} 
+                              className="h-2" 
+                            />
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {session.processed_records}/{session.total_records}
+                            </p>
+                          </div>
+                        )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      {upload.status === "completed" ? (
-                        <span className="flex items-center gap-1 text-success">
-                          <CheckCircle className="h-4 w-4" />
-                          Completed
-                        </span>
-                      ) : (
-                        <span className="flex items-center gap-1 text-warning">
-                          <AlertCircle className="h-4 w-4" />
-                          Processing
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
             </Card>
           </TabsContent>

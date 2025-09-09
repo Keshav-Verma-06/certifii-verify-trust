@@ -27,14 +27,25 @@ serve(async (req) => {
   }
 
   try {
+    const hasUrl = Boolean(Deno.env.get('SUPABASE_URL'))
+    const hasServiceKey = Boolean(Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'))
+    console.log('[secure-auth] env check', { hasUrl, hasServiceKey })
+
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     )
 
-    const { action, email, password, userType } = await req.json()
-    
-    console.log(`Secure auth request: ${action} for ${userType} user: ${email}`)
+    // Read the request body ONCE and reuse it
+    const body = await req.json()
+    const { action, email, password, userType } = body
+
+    console.log('[secure-auth v2] request start', {
+      action,
+      userType,
+      email,
+      method: req.method,
+    })
 
     if (action === 'login') {
       let credentialsTable = ''
@@ -50,6 +61,8 @@ serve(async (req) => {
         throw new Error('Invalid user type')
       }
 
+      console.log('[secure-auth] login path', { credentialsTable, profileRole, email })
+
       // Check for account lockout
       const { data: credentials, error: credError } = await supabase
         .from(credentialsTable)
@@ -58,7 +71,7 @@ serve(async (req) => {
         .single()
 
       if (credError || !credentials) {
-        console.error('Invalid credentials for email:', email)
+        console.error('[secure-auth] credentials fetch failed or not found', { email, credError })
         return new Response(
           JSON.stringify({ success: false, error: 'Invalid credentials' }),
           { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -79,6 +92,7 @@ serve(async (req) => {
 
       // Verify password
       const isValidPassword = await verifyPassword(password, credentials.salt, credentials.password_hash)
+      console.log('[secure-auth] password verification', { email, isValidPassword })
       
       if (!isValidPassword) {
         // Increment login attempts
@@ -131,7 +145,7 @@ serve(async (req) => {
         )
       }
 
-      console.log(`Successful login for ${userType} user:`, email)
+      console.log('[secure-auth] login success', { userType, email })
 
       return new Response(
         JSON.stringify({ 
@@ -149,16 +163,39 @@ serve(async (req) => {
     }
 
     if (action === 'signup' && userType === 'institution') {
-      const { full_name, institution_name } = await req.json()
+      const { full_name, institution_name } = body
+
+      console.log('[secure-auth] signup path (institution)', {
+        email,
+        hasPassword: Boolean(password),
+        hasFullName: Boolean(full_name),
+        hasInstitutionName: Boolean(institution_name)
+      })
+
+      if (!email || !password || !full_name || !institution_name) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'Missing required fields' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        )
+      }
       
-      // Check if institution already exists
-      const { data: existingProfile } = await supabase
+      // Check if institution already exists (do not throw on 0 rows)
+      const { data: existingProfile, error: existingErr } = await supabase
         .from('profiles')
         .select('email')
         .eq('email', email)
-        .single()
+        .maybeSingle()
+
+      if (existingErr && existingErr.code !== 'PGRST116') { // ignore No Rows error
+        console.error('[secure-auth] error checking existing profile', existingErr)
+        return new Response(
+          JSON.stringify({ success: false, error: 'Failed to validate email' }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        )
+      }
 
       if (existingProfile) {
+        console.log('[secure-auth] email already registered', { email })
         return new Response(
           JSON.stringify({ success: false, error: 'Email already registered' }),
           { status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -167,6 +204,7 @@ serve(async (req) => {
 
       // Create user profile
       const userId = crypto.randomUUID()
+      console.log('[secure-auth] inserting profile', { email, userId })
       const { error: profileError } = await supabase
         .from('profiles')
         .insert({
@@ -179,9 +217,9 @@ serve(async (req) => {
         })
 
       if (profileError) {
-        console.error('Failed to create profile:', profileError)
+        console.error('[secure-auth] failed to create profile', profileError)
         return new Response(
-          JSON.stringify({ success: false, error: 'Failed to create account' }),
+          JSON.stringify({ success: false, error: 'Failed to create profile', details: profileError.message || profileError }),
           { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         )
       }
@@ -189,6 +227,7 @@ serve(async (req) => {
       // Create credentials
       const salt = crypto.randomUUID()
       const passwordHash = await hashPassword(password, salt)
+      console.log('[secure-auth] inserting credentials', { email, userId })
       
       const { error: credError } = await supabase
         .from('institution_credentials')
@@ -200,17 +239,17 @@ serve(async (req) => {
         })
 
       if (credError) {
-        console.error('Failed to create credentials:', credError)
+        console.error('[secure-auth] failed to create credentials', credError)
         // Cleanup profile if credentials creation failed
         await supabase.from('profiles').delete().eq('user_id', userId)
         
         return new Response(
-          JSON.stringify({ success: false, error: 'Failed to create account' }),
+          JSON.stringify({ success: false, error: 'Failed to create credentials', details: credError.message || credError }),
           { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         )
       }
 
-      console.log('Successfully created institution account for:', email)
+      console.log('[secure-auth] signup success (institution)', { email, userId })
 
       return new Response(
         JSON.stringify({ 
@@ -227,9 +266,9 @@ serve(async (req) => {
     )
 
   } catch (error) {
-    console.error('Secure auth error:', error)
+    console.error('[secure-auth] unhandled error', error)
     return new Response(
-      JSON.stringify({ success: false, error: 'Internal server error' }),
+      JSON.stringify({ success: false, error: 'Internal server error', details: (error as any)?.message || String(error) }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
   }

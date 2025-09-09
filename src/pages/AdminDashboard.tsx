@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,8 +14,18 @@ import {
   Shield,
   Database
 } from "lucide-react";
+import { AdminLogin } from "@/components/auth/AdminLogin";
 
 export const AdminDashboard = () => {
+  const [adminUser, setAdminUser] = useState<any>(null);
+
+  const handleAuthSuccess = (user: any) => {
+    setAdminUser(user);
+  };
+
+  if (!adminUser) {
+    return <AdminLogin onSuccess={handleAuthSuccess} />;
+  }
   const stats = [
     {
       title: "Total Verifications",
@@ -144,11 +155,16 @@ export const AdminDashboard = () => {
         <div className="flex justify-between items-center mb-8">
           <div>
             <h1 className="text-3xl font-bold">Admin Dashboard</h1>
-            <p className="text-muted-foreground">Monitor verification activity and system security</p>
+            <p className="text-muted-foreground">
+              Welcome, {adminUser.full_name} - Monitor verification activity and system security
+            </p>
           </div>
           <div className="flex gap-3">
             <Button variant="outline">Export Report</Button>
             <Button>Security Scan</Button>
+            <Button variant="outline" onClick={() => setAdminUser(null)}>
+              Logout
+            </Button>
           </div>
         </div>
 

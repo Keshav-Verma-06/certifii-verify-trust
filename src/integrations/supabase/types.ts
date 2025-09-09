@@ -14,6 +14,56 @@ export type Database = {
   }
   public: {
     Tables: {
+      admin_credentials: {
+        Row: {
+          created_at: string | null
+          email: string
+          id: string
+          is_active: boolean | null
+          last_login: string | null
+          locked_until: string | null
+          login_attempts: number | null
+          password_hash: string
+          salt: string
+          updated_at: string | null
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          email: string
+          id?: string
+          is_active?: boolean | null
+          last_login?: string | null
+          locked_until?: string | null
+          login_attempts?: number | null
+          password_hash: string
+          salt: string
+          updated_at?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          email?: string
+          id?: string
+          is_active?: boolean | null
+          last_login?: string | null
+          locked_until?: string | null
+          login_attempts?: number | null
+          password_hash?: string
+          salt?: string
+          updated_at?: string | null
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "admin_credentials_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+        ]
+      }
       audit_logs: {
         Row: {
           action: string
@@ -281,6 +331,56 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "certificates"
             referencedColumns: ["id"]
+          },
+        ]
+      }
+      institution_credentials: {
+        Row: {
+          created_at: string | null
+          email: string
+          id: string
+          is_active: boolean | null
+          last_login: string | null
+          locked_until: string | null
+          login_attempts: number | null
+          password_hash: string
+          salt: string
+          updated_at: string | null
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          email: string
+          id?: string
+          is_active?: boolean | null
+          last_login?: string | null
+          locked_until?: string | null
+          login_attempts?: number | null
+          password_hash: string
+          salt: string
+          updated_at?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          email?: string
+          id?: string
+          is_active?: boolean | null
+          last_login?: string | null
+          locked_until?: string | null
+          login_attempts?: number | null
+          password_hash?: string
+          salt?: string
+          updated_at?: string | null
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "institution_credentials_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
           },
         ]
       }

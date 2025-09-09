@@ -4,26 +4,18 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Upload, Database, CheckCircle, AlertCircle, FileSpreadsheet } from "lucide-react";
+import { Upload, CheckCircle, AlertCircle, FileSpreadsheet } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { InstitutionAuth } from "@/components/auth/InstitutionAuth";
 
 export const InstitutionPortal = () => {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [loginData, setLoginData] = useState({ email: "", password: "" });
+  const [institutionUser, setInstitutionUser] = useState<any>(null);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadStatus, setUploadStatus] = useState<"idle" | "uploading" | "success" | "error">("idle");
   const { toast } = useToast();
 
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    // Simulate login
-    if (loginData.email && loginData.password) {
-      setIsLoggedIn(true);
-      toast({
-        title: "Login successful",
-        description: "Welcome to the Institution Portal",
-      });
-    }
+  const handleAuthSuccess = (user: any) => {
+    setInstitutionUser(user);
   };
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -60,60 +52,8 @@ export const InstitutionPortal = () => {
     }, 2000);
   };
 
-  if (!isLoggedIn) {
-    return (
-      <div className="container mx-auto px-4 lg:px-8 py-8">
-        <div className="max-w-md mx-auto">
-          <Card className="p-8">
-            <div className="text-center mb-8">
-              <div className="h-12 w-12 bg-primary rounded-lg flex items-center justify-center mx-auto mb-4">
-                <Database className="h-6 w-6 text-primary-foreground" />
-              </div>
-              <h1 className="text-2xl font-bold mb-2">Institution Login</h1>
-              <p className="text-muted-foreground">
-                Access your institution portal to manage certificate records
-              </p>
-            </div>
-
-            <form onSubmit={handleLogin} className="space-y-4">
-              <div>
-                <Label htmlFor="email">Email Address</Label>
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="institution@university.edu"
-                  value={loginData.email}
-                  onChange={(e) => setLoginData({...loginData, email: e.target.value})}
-                  required
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  placeholder="Enter your password"
-                  value={loginData.password}
-                  onChange={(e) => setLoginData({...loginData, password: e.target.value})}
-                  required
-                />
-              </div>
-
-              <Button type="submit" className="w-full">
-                Sign In
-              </Button>
-            </form>
-
-            <div className="mt-6 text-center">
-              <p className="text-sm text-muted-foreground">
-                Need access? Contact your system administrator
-              </p>
-            </div>
-          </Card>
-        </div>
-      </div>
-    );
+  if (!institutionUser) {
+    return <InstitutionAuth onSuccess={handleAuthSuccess} />;
   }
 
   return (
@@ -122,9 +62,11 @@ export const InstitutionPortal = () => {
         <div className="flex justify-between items-center mb-8">
           <div>
             <h1 className="text-3xl font-bold">Institution Portal</h1>
-            <p className="text-muted-foreground">Manage your certificate records and integrations</p>
+            <p className="text-muted-foreground">
+              Welcome, {institutionUser.institution_name} - Manage your certificate records
+            </p>
           </div>
-          <Button variant="outline" onClick={() => setIsLoggedIn(false)}>
+          <Button variant="outline" onClick={() => setInstitutionUser(null)}>
             Logout
           </Button>
         </div>

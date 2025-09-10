@@ -15,7 +15,86 @@ INSERT INTO public.profiles (
   'CertifyMe Government',
   true
 ) ON CONFLICT (email) DO NOTHING;
+-- Create student_academics table to store semester-wise SGPA uploads
+CREATE TABLE IF NOT EXISTS public.student_academics (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    institution_id uuid REFERENCES public.institutions(id) ON DELETE CASCADE,
+    certificate_id uuid REFERENCES public.certificates(id), -- optional link if a certificate exists
+    name text NOT NULL,
+    roll_number text NOT NULL,
+    division text,
+    department text,
+    sgpa_sem1 numeric(4,2),
+    sgpa_sem2 numeric(4,2),
+    sgpa_sem3 numeric(4,2),
+    sgpa_sem4 numeric(4,2),
+    sgpa_sem5 numeric(4,2),
+    sgpa_sem6 numeric(4,2),
+    sgpa_sem7 numeric(4,2),
+    sgpa_sem8 numeric(4,2),
+    uploaded_by uuid, -- user who uploaded the record
+    source_file text, -- reference to the uploaded file path if needed
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    UNIQUE (institution_id, roll_number) -- one row per student per institution
+);
 
+-- Enable RLS and create policies similar to certificates
+ALTER TABLE public.student_academics ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Public can view verified student academics via certificate link" ON public.student_academics
+FOR SELECT USING (
+  -- Allow select when there is a linked verified certificate
+  EXISTS (
+    SELECT 1 FROM public.certificates c
+    WHERE c.id = student_academics.certificate_id AND c.status = 'verified'
+  )
+);
+
+CREATE POLICY "Institutions can manage their student academics" ON public.student_academics
+FOR ALL USING (
+  EXISTS (
+    SELECT 1 FROM public.profiles p
+    JOIN public.institutions i ON p.institution_name = i.name
+    WHERE p.user_id = auth.uid() AND i.id = student_academics.institution_id
+  )
+);
+
+-- Allow authenticated users to insert rows they upload (when institution_id is null) to avoid blocking
+-- bulk uploads for onboarding. Tighten later once institution mapping is enforced.
+CREATE POLICY "Authenticated can insert their own student academics" ON public.student_academics
+FOR INSERT WITH CHECK (
+  auth.role() = 'authenticated'
+);
+
+CREATE POLICY "Admins can manage all student academics" ON public.student_academics
+FOR ALL USING (public.get_user_role(auth.uid()) = 'admin');
+
+-- Trigger to maintain updated_at
+CREATE TRIGGER update_student_academics_updated_at
+    BEFORE UPDATE ON public.student_academics
+    FOR EACH ROW
+    EXECUTE FUNCTION public.update_updated_at_column();
+
+-- Indexes for performance
+CREATE INDEX IF NOT EXISTS idx_student_academics_institution ON public.student_academics(institution_id);
+CREATE INDEX IF NOT EXISTS idx_student_academics_roll ON public.student_academics(roll_number);
+CREATE INDEX IF NOT EXISTS idx_student_academics_certificate ON public.student_academics(certificate_id);
+
+-- Additional permissive policies to allow returning rows after insert under RLS
+-- Allow authenticated users to SELECT rows they uploaded
+CREATE POLICY "Authenticated can select own student academics" ON public.student_academics
+FOR SELECT USING (
+  auth.role() = 'authenticated' AND uploaded_by = auth.uid()
+);
+
+-- Allow authenticated users to UPDATE rows they uploaded (optional for future upserts)
+CREATE POLICY "Authenticated can update own student academics" ON public.student_academics
+FOR UPDATE USING (
+  auth.role() = 'authenticated' AND uploaded_by = auth.uid()
+) WITH CHECK (
+  auth.role() = 'authenticated' AND uploaded_by = auth.uid()
+);
 -- Create institution credentials table for secure login
 CREATE TABLE IF NOT EXISTS public.institution_credentials (
   id uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,

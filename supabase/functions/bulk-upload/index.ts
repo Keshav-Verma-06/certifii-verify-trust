@@ -29,26 +29,45 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_ANON_KEY') ?? '',
       { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
     );
+    const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+    const adminClient = serviceKey
+      ? createClient(
+          Deno.env.get('SUPABASE_URL') ?? '',
+          serviceKey,
+          { global: { headers: {} } }
+        )
+      : supabaseClient;
+    const authUser = (await supabaseClient.auth.getUser()).data.user;
+    console.log('[bulk-upload] auth user id:', authUser?.id ?? 'null');
 
     const formData = await req.formData();
     const file = formData.get('file') as File;
-    const institutionId = formData.get('institution_id') as string;
+    const institutionId = (formData.get('institution_id') as string) || null;
+    console.log('[bulk-upload] institutionId present:', Boolean(institutionId), 'value:', institutionId ?? 'null');
 
     if (!file) {
       throw new Error('No file provided');
     }
 
-    console.log('Processing bulk upload:', file.name, file.type);
+    console.log('Processing bulk upload:', file.name, file.type, 'size:', (file as any)?.size ?? 'unknown');
 
     // Upload file to storage for tracking
     const fileName = `${crypto.randomUUID()}-${file.name}`;
-    await supabaseClient.storage
+    const storageRes = await adminClient.storage
       .from('bulk-uploads')
       .upload(fileName, file);
+    if ((storageRes as any)?.error) {
+      console.error('[bulk-upload] storage upload error:', (storageRes as any).error);
+    } else {
+      console.log('[bulk-upload] storage upload ok, path:', fileName);
+    }
 
     // Parse CSV/Excel file
     const fileContent = await file.text();
-    const rows = parse(fileContent, { skipFirstRow: true }) as string[][];
+    // Do not skip the first row; we'll detect headers dynamically so both
+    // headered and headerless files are supported
+    const rows = parse(fileContent, { skipFirstRow: false }) as string[][];
+    console.log('[bulk-upload] parsed rows (including potential header):', rows.length);
 
     // Create bulk upload session
     const { data: session, error: sessionError } = await supabaseClient
@@ -66,83 +85,204 @@ serve(async (req) => {
     if (sessionError) {
       throw new Error(`Failed to create upload session: ${sessionError.message}`);
     }
+    console.log('[bulk-upload] created session id:', session.id);
 
     let successful = 0;
     let failed = 0;
     const errors: string[] = [];
 
+    // Detect header style (new student academics vs legacy certificates)
+    const firstRow = rows[0] || [];
+    const normalize = (s: string) => (s || '').trim().toLowerCase().replace(/\s+/g, '_');
+    const normalizedHeaders = firstRow.map(normalize);
+
+    const academicKeys = [
+      'name','roll_number','seat_number','division','department',
+      'sgpa_sem1','sgpa_sem2','sgpa_sem3','sgpa_sem4',
+      'sgpa_sem5','sgpa_sem6','sgpa_sem7','sgpa_sem8'
+    ];
+    const isAcademicHeader = normalizedHeaders.some(h => academicKeys.includes(h));
+
+    const certificateKeys = ['certificate_id','student_name','course','institution_name','issue_date'];
+    const isCertificateHeader = normalizedHeaders.some(h => certificateKeys.includes(h));
+
+    // If the first row looks like headers, skip it when iterating data rows
+    const dataStartIndex = (isAcademicHeader || isCertificateHeader) ? 1 : 0;
+    console.log('[bulk-upload] header detection:', {
+      normalizedHeaders,
+      isAcademicHeader,
+      isCertificateHeader,
+      dataStartIndex,
+    });
+
+    // Build a column index map for academics if header present
+    const academicIndex: Record<string, number> = {};
+    if (isAcademicHeader) {
+      for (let i = 0; i < normalizedHeaders.length; i++) {
+        academicIndex[normalizedHeaders[i]] = i;
+      }
+      console.log('[bulk-upload] academicIndex map:', academicIndex);
+    }
+
+    // Build a column index map for certificates if header present
+    const certificateIndex: Record<string, number> = {};
+    if (isCertificateHeader) {
+      for (let i = 0; i < normalizedHeaders.length; i++) {
+        certificateIndex[normalizedHeaders[i]] = i;
+      }
+      console.log('[bulk-upload] certificateIndex map:', certificateIndex);
+    }
+
+    // Preflight check for student_academics table availability
+    if (isAcademicHeader) {
+      const preflight = await supabaseClient
+        .from('student_academics')
+        .select('id')
+        .limit(1);
+      if (preflight.error) {
+        console.error('[bulk-upload] preflight student_academics error:', preflight.error);
+      } else {
+        console.log('[bulk-upload] preflight student_academics ok');
+      }
+    }
+
     // Process each row
-    for (let i = 0; i < rows.length; i++) {
+    for (let i = dataStartIndex; i < rows.length; i++) {
       try {
         const row = rows[i];
-        const certificateData: CertificateRow = {
-          certificate_id: row[0],
-          student_name: row[1],
-          course: row[2],
-          institution_name: row[3],
-          issue_date: row[4],
-          graduation_date: row[5] || undefined,
-          grade: row[6] || undefined
-        };
 
-        // Validate required fields
-        if (!certificateData.certificate_id || !certificateData.student_name || 
-            !certificateData.course || !certificateData.issue_date) {
-          throw new Error(`Row ${i + 1}: Missing required fields`);
-        }
+        if (isAcademicHeader) {
+          // Insert into student_academics with flexible, optional columns
+          const get = (key: string) => {
+            const idx = academicIndex[key];
+            return (idx !== undefined && row[idx] !== undefined) ? String(row[idx]).trim() : undefined;
+          };
 
-        // Generate blockchain hash
-        const blockchainHash = await crypto.subtle.digest(
-          'SHA-256',
-          new TextEncoder().encode(`${certificateData.certificate_id}-${Date.now()}`)
-        );
-        const hashArray = Array.from(new Uint8Array(blockchainHash));
-        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+          const parseNum = (val?: string) => {
+            if (!val || val === '') return null;
+            const n = Number(val);
+            return isNaN(n) ? null : Number(n.toFixed(2));
+          };
 
-        // Generate digital signature
-        const digitalSignature = await crypto.subtle.digest(
-          'SHA-256',
-          new TextEncoder().encode(JSON.stringify(certificateData) + hashHex)
-        );
-        const sigArray = Array.from(new Uint8Array(digitalSignature));
-        const sigHex = sigArray.map(b => b.toString(16).padStart(2, '0')).join('');
+          const name = get('name') ?? get('student_name');
+          const roll = get('roll_number') ?? get('seat_number') ?? get('roll');
 
-        // Insert certificate
-        const { error: certError } = await supabaseClient
-          .from('certificates')
-          .insert({
-            certificate_id: certificateData.certificate_id,
-            student_name: certificateData.student_name,
-            course: certificateData.course,
+          if (!name || !roll) {
+            throw new Error(`Row ${i + 1}: Missing Name or Roll_Number`);
+          }
+
+          const payload: Record<string, unknown> = {
             institution_id: institutionId,
-            issue_date: certificateData.issue_date,
-            graduation_date: certificateData.graduation_date,
-            grade: certificateData.grade,
-            blockchain_hash: hashHex,
-            digital_signature: sigHex,
-            status: 'verified',
-            verification_method: ['manual'],
-            uploaded_by: (await supabaseClient.auth.getUser()).data.user?.id
-          });
+            name,
+            roll_number: roll,
+            division: get('division') ?? null,
+            department: get('department') ?? null,
+            sgpa_sem1: parseNum(get('sgpa_sem1') as string | undefined),
+            sgpa_sem2: parseNum(get('sgpa_sem2') as string | undefined),
+            sgpa_sem3: parseNum(get('sgpa_sem3') as string | undefined),
+            sgpa_sem4: parseNum(get('sgpa_sem4') as string | undefined),
+            sgpa_sem5: parseNum(get('sgpa_sem5') as string | undefined),
+            sgpa_sem6: parseNum(get('sgpa_sem6') as string | undefined),
+            sgpa_sem7: parseNum(get('sgpa_sem7') as string | undefined),
+            sgpa_sem8: parseNum(get('sgpa_sem8') as string | undefined),
+            uploaded_by: (await supabaseClient.auth.getUser()).data.user?.id,
+            source_file: fileName,
+          };
+          console.log('[bulk-upload] upserting student_academics payload keys:', Object.keys(payload));
 
-        if (certError) {
-          throw new Error(`Row ${i + 1}: ${certError.message}`);
+          const { error: acadError } = await adminClient
+            .from('student_academics')
+            .upsert(payload, { onConflict: 'institution_id,roll_number' });
+
+          if (acadError) {
+            console.error('[bulk-upload] upsert student_academics failed at row', i + 1, 'error:', acadError);
+            throw new Error(`Row ${i + 1}: ${acadError.message}`);
+          }
+        } else {
+          // Legacy certificate format (with or without header)
+          const get = (key: string, defaultIndex: number) => {
+            if (isCertificateHeader && certificateIndex[key] !== undefined) {
+              const idx = certificateIndex[key];
+              return row[idx];
+            }
+            return row[defaultIndex];
+          };
+
+          const certificateData: CertificateRow = {
+            certificate_id: String(get('certificate_id', 0) || '').trim(),
+            student_name: String(get('student_name', 1) || '').trim(),
+            course: String(get('course', 2) || '').trim(),
+            institution_name: String(get('institution_name', 3) || '').trim(),
+            issue_date: String(get('issue_date', 4) || '').trim(),
+            graduation_date: String(get('graduation_date', 5) || '').trim() || undefined,
+            grade: String(get('grade', 6) || '').trim() || undefined,
+          };
+
+          // Validate required fields for certificate flow
+          if (!certificateData.certificate_id || !certificateData.student_name || 
+              !certificateData.course || !certificateData.issue_date) {
+            throw new Error(`Row ${i + 1}: Missing required fields`);
+          }
+
+          // Generate blockchain hash
+          const blockchainHash = await crypto.subtle.digest(
+            'SHA-256',
+            new TextEncoder().encode(`${certificateData.certificate_id}-${Date.now()}`)
+          );
+          const hashArray = Array.from(new Uint8Array(blockchainHash));
+          const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+          // Generate digital signature
+          const digitalSignature = await crypto.subtle.digest(
+            'SHA-256',
+            new TextEncoder().encode(JSON.stringify(certificateData) + hashHex)
+          );
+          const sigArray = Array.from(new Uint8Array(digitalSignature));
+          const sigHex = sigArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+          // Insert certificate
+          const { error: certError } = await supabaseClient
+            .from('certificates')
+            .insert({
+              certificate_id: certificateData.certificate_id,
+              student_name: certificateData.student_name,
+              course: certificateData.course,
+              institution_id: institutionId,
+              issue_date: certificateData.issue_date,
+              graduation_date: certificateData.graduation_date,
+              grade: certificateData.grade,
+              blockchain_hash: hashHex,
+              digital_signature: sigHex,
+              status: 'verified',
+              verification_method: ['manual'],
+              uploaded_by: (await supabaseClient.auth.getUser()).data.user?.id
+            });
+
+          if (certError) {
+            console.error('[bulk-upload] insert certificates failed at row', i + 1, 'error:', certError);
+            throw new Error(`Row ${i + 1}: ${certError.message}`);
+          }
+          console.log('[bulk-upload] inserted certificate for row', i + 1, 'certificate_id:', certificateData.certificate_id);
         }
 
         successful++;
+        if ((i - dataStartIndex + 1) % 100 === 0) {
+          console.log('[bulk-upload] processed rows:', (i - dataStartIndex + 1), 'success:', successful, 'failed:', failed);
+        }
 
       } catch (error) {
         failed++;
-        errors.push(`Row ${i + 1}: ${error.message}`);
-        console.error(`Error processing row ${i + 1}:`, error);
+        const message = (error as any)?.message || String(error);
+        errors.push(`Row ${i + 1}: ${message}`);
+        console.error(`[bulk-upload] Error processing row ${i + 1}:`, error);
       }
 
       // Update progress periodically
       if ((i + 1) % 10 === 0 || i === rows.length - 1) {
-        await supabaseClient
+        await adminClient
           .from('bulk_upload_sessions')
           .update({
-            processed_records: i + 1,
+            processed_records: i + 1 - dataStartIndex,
             successful_records: successful,
             failed_records: failed,
             error_log: errors.length > 0 ? { errors } : null
@@ -152,7 +292,7 @@ serve(async (req) => {
     }
 
     // Mark session as completed
-    await supabaseClient
+    await adminClient
       .from('bulk_upload_sessions')
       .update({
         status: 'completed',
@@ -162,6 +302,7 @@ serve(async (req) => {
         error_log: errors.length > 0 ? { errors } : null
       })
       .eq('id', session.id);
+    console.log('[bulk-upload] completed session', session.id, 'total:', rows.length - dataStartIndex, 'success:', successful, 'failed:', failed);
 
     // Create system alert for completion
     await supabaseClient
@@ -190,23 +331,24 @@ serve(async (req) => {
         }
       });
 
-    return new Response(JSON.stringify({
+    const responseBody = {
       success: true,
       session_id: session.id,
-      total_records: rows.length,
+      total_records: rows.length - dataStartIndex,
       successful_records: successful,
       failed_records: failed,
       errors: errors.slice(0, 10) // Return first 10 errors
-    }), {
+    };
+    console.log('[bulk-upload] returning 200 OK with summary:', responseBody);
+    return new Response(JSON.stringify(responseBody), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
 
   } catch (error) {
-    console.error('Error in bulk-upload function:', error);
-    return new Response(JSON.stringify({ 
-      error: error.message,
-      success: false 
-    }), {
+    console.error('Error in bulk-upload function:', error, (error as any)?.stack);
+    const errorMessage = (error as any)?.message || 'Unknown error';
+    const errBody = { error: errorMessage, success: false };
+    return new Response(JSON.stringify(errBody), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });

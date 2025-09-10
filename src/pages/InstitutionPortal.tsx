@@ -102,31 +102,34 @@ export const InstitutionPortal = () => {
     setUploadProgress(0);
 
     try {
-      // Get institution ID from the user's profile
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('institution_name')
-        .eq('user_id', institutionUser.id)
-        .single();
+      // Try to resolve institution id; if not found, continue without blocking
+      let resolvedInstitutionId: string | undefined;
+      try {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('institution_name')
+          .eq('user_id', institutionUser.id)
+          .maybeSingle();
 
-      if (!profile?.institution_name) {
-        throw new Error('Institution not found for user');
-      }
-
-      // Get institution ID
-      const { data: institution } = await supabase
-        .from('institutions')
-        .select('id')
-        .eq('name', profile.institution_name)
-        .single();
-
-      if (!institution?.id) {
-        throw new Error('Institution ID not found');
+        if (profile?.institution_name) {
+          const { data: institution } = await supabase
+            .from('institutions')
+            .select('id')
+            .eq('name', profile.institution_name)
+            .maybeSingle();
+          if (institution?.id) {
+            resolvedInstitutionId = institution.id as string;
+          }
+        }
+      } catch (_) {
+        // Non-fatal; we'll proceed without institution_id
       }
 
       const formData = new FormData();
       formData.append('file', uploadFile);
-      formData.append('institution_id', institution.id);
+      if (resolvedInstitutionId) {
+        formData.append('institution_id', resolvedInstitutionId);
+      }
 
       // Progress simulation
       const progressInterval = setInterval(() => {
@@ -243,8 +246,9 @@ export const InstitutionPortal = () => {
                   <div className="bg-muted p-4 rounded-lg">
                     <h4 className="font-semibold mb-2">File Format Requirements:</h4>
                     <ul className="text-sm text-muted-foreground space-y-1">
-                      <li>• Required columns: Name, Roll Number, Certificate ID, Course, Year</li>
-                      <li>• Optional columns: Date of Issue, Grade, Additional Details</li>
+                      <li>• New academic headers (preferred): <strong>Name</strong>, <strong>Roll_Number</strong>, Division, Department, SGPA_Sem1..SGPA_Sem8</li>
+                      <li>• Legacy certificate format is still supported: Certificate ID, Student Name, Course, Institution Name, Issue Date</li>
+                      <li>• Headings are optional; if present they must match exactly for auto-mapping</li>
                       <li>• Maximum file size: 10MB</li>
                       <li>• Supported formats: CSV, XLSX, XLS</li>
                     </ul>

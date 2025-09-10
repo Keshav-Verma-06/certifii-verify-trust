@@ -53,18 +53,33 @@ export const preprocessImage = (canvas: HTMLCanvasElement, context: CanvasRender
 // Extract text using OCR
 export const extractTextWithOCR = async (file: File): Promise<string> => {
   try {
+    console.log('🔍 Starting OCR text extraction...');
+    console.log('📄 File details:', { name: file.name, size: file.size, type: file.type });
+    
     const result = await Tesseract.recognize(file, 'eng', {
-      logger: m => console.log(m), // Optional: log progress
+      logger: (m) => {
+        if (m.status === 'recognizing text') {
+          console.log(`📝 OCR Progress: ${Math.round(m.progress * 100)}%`);
+        }
+      }
     });
-    return result.data.text;
+    
+    const extractedText = result.data.text;
+    console.log('✅ OCR extraction completed');
+    console.log('📄 Extracted text length:', extractedText.length);
+    console.log('📄 First 200 characters:', extractedText.substring(0, 200));
+    
+    return extractedText;
   } catch (error) {
-    console.error('OCR extraction failed:', error);
+    console.error('❌ OCR extraction failed:', error);
     throw new Error('Failed to extract text from image');
   }
 };
 
 // Extract structured certificate data from OCR text
 export const extractCertificateData = (text: string): OCRExtractedData => {
+  console.log('🔍 Starting structured data extraction from OCR text...');
+  
   const patterns = {
     name: [
       /(?:Name|NAME|Student['\s]s Name|Candidate Name)[\s:\-]*([A-Z\s\.\'\,]+)/i,
@@ -103,20 +118,27 @@ export const extractCertificateData = (text: string): OCRExtractedData => {
   const extractedData: OCRExtractedData = {};
 
   for (const [key, regexList] of Object.entries(patterns)) {
+    console.log(`🔍 Searching for ${key}...`);
     for (const pattern of regexList) {
       const match = text.match(pattern);
       if (match) {
         extractedData[key as keyof OCRExtractedData] = match[1].trim().toUpperCase();
+        console.log(`✅ Found ${key}: "${match[1].trim()}"`);
         break;
       }
+    }
+    if (!extractedData[key as keyof OCRExtractedData]) {
+      console.log(`❌ No match found for ${key}`);
     }
   }
 
   // Clean up name field
   if (extractedData.name) {
     extractedData.name = extractedData.name.replace(/\s+/g, ' ').trim();
+    console.log(`🧹 Cleaned name: "${extractedData.name}"`);
   }
 
+  console.log('📊 Final extracted data:', extractedData);
   return extractedData;
 };
 
@@ -187,12 +209,15 @@ export const verifyQRCode = async (file: File): Promise<{ status: string; valid:
 
 // Generate image hash for tampering detection
 export const generateImageHash = async (file: File): Promise<string> => {
+  console.log('🔐 Generating image hash for tampering detection...');
+  
   return new Promise((resolve, reject) => {
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
     const img = new Image();
 
     img.onload = async () => {
+      console.log(`📐 Image dimensions: ${img.width}x${img.height}`);
       canvas.width = img.width;
       canvas.height = img.height;
       context?.drawImage(img, 0, 0);
@@ -200,9 +225,12 @@ export const generateImageHash = async (file: File): Promise<string> => {
       // Create a simple perceptual hash
       const imageData = context?.getImageData(0, 0, canvas.width, canvas.height);
       if (!imageData) {
+        console.error('❌ Failed to get image data');
         reject(new Error('Failed to get image data'));
         return;
       }
+
+      console.log(`📊 Processing ${imageData.data.length} pixels for hash generation...`);
 
       // Convert to grayscale and create hash
       const grayData = [];
@@ -216,28 +244,40 @@ export const generateImageHash = async (file: File): Promise<string> => {
       const hashArray = Array.from(new Uint8Array(hash));
       const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
       
+      console.log(`✅ Generated image hash: ${hashHex.substring(0, 16)}...`);
       resolve(hashHex);
     };
 
-    img.onerror = () => reject(new Error('Failed to load image'));
+    img.onerror = () => {
+      console.error('❌ Failed to load image for hashing');
+      reject(new Error('Failed to load image'));
+    };
+    
     img.src = URL.createObjectURL(file);
   });
 };
 
 // Upload file to Supabase storage
 export const uploadToStorage = async (file: File, path: string): Promise<string> => {
+  console.log(`📤 Uploading file to storage: ${path}`);
+  console.log(`📄 File size: ${(file.size / 1024 / 1024).toFixed(2)} MB`);
+  
   const { data, error } = await supabase.storage
     .from('certificates')
     .upload(path, file);
 
   if (error) {
+    console.error('❌ Upload failed:', error);
     throw new Error(`Upload failed: ${error.message}`);
   }
+
+  console.log('✅ File uploaded successfully');
 
   const { data: urlData } = supabase.storage
     .from('certificates')
     .getPublicUrl(path);
 
+  console.log(`🔗 Public URL generated: ${urlData.publicUrl}`);
   return urlData.publicUrl;
 };
 
@@ -271,11 +311,14 @@ export const performMultiLayerVerification = async (
     const identifier = ocrData.certificateId || ocrData.seatNumber || 'unknown';
     const fileName = `verified/${identifier}_${timestamp}.${file.name.split('.').pop()}`;
     
+    console.log(`📁 Generated filename: ${fileName}`);
+    
     let imageUrl: string | undefined;
     try {
       imageUrl = await uploadToStorage(file, fileName);
+      console.log('✅ Image uploaded successfully');
     } catch (error) {
-      console.warn('Image upload failed:', error);
+      console.warn('⚠️ Image upload failed:', error);
     }
 
     // Layer 3: Database Verification
@@ -288,6 +331,14 @@ export const performMultiLayerVerification = async (
     };
 
     try {
+      console.log('🔍 Calling advanced verification edge function...');
+      console.log('📤 Sending data:', {
+        ocr_data: ocrData,
+        user_input_data: userInputData,
+        image_hash: imageHash.substring(0, 16) + '...',
+        image_url: imageUrl
+      });
+      
       // Call the verification edge function
       const { data: verificationData, error } = await supabase.functions.invoke('advanced-verification', {
         body: {
@@ -298,10 +349,15 @@ export const performMultiLayerVerification = async (
         }
       });
 
-      if (error) throw error;
+      if (error) {
+        console.error('❌ Edge function error:', error);
+        throw error;
+      }
+      
+      console.log('✅ Database verification response:', verificationData);
       dbVerificationResult = verificationData;
     } catch (error) {
-      console.error('Database verification failed:', error);
+      console.error('❌ Database verification failed:', error);
       dbVerificationResult = {
         is_db_verified: false,
         verification_status: 'ERROR_DB_CHECK',
@@ -313,6 +369,7 @@ export const performMultiLayerVerification = async (
     // Layer 4: QR Code & Tampering Check
     console.log('[Layer 4/4] Checking QR code and tampering...');
     const qrResult = await verifyQRCode(file);
+    console.log('🔍 QR Code verification result:', qrResult);
     
     const finalResult: VerificationResult = {
       verification_status: dbVerificationResult.verification_status,

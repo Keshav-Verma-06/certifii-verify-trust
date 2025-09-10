@@ -39,15 +39,20 @@ serve(async (req) => {
 
     const { ocr_data, user_input_data, image_hash, image_url }: VerificationRequest = await req.json();
 
-    console.log('Advanced verification request:', { ocr_data, user_input_data, image_hash });
+    console.log('🚀 Advanced verification request received');
+    console.log('📊 OCR Data:', ocr_data);
+    console.log('👤 User Input Data:', user_input_data);
+    console.log('🔐 Image Hash:', image_hash?.substring(0, 16) + '...');
 
     // Combine OCR data with user input data (user input takes precedence)
     const combinedData = { ...ocr_data, ...user_input_data };
+    console.log('🔗 Combined data for verification:', combinedData);
     
     const seatNumber = combinedData.seatNumber;
     const certificateId = combinedData.certificateId;
 
     if (!seatNumber && !certificateId) {
+      console.log('❌ No seat number or certificate ID provided');
       return new Response(JSON.stringify({
         is_db_verified: false,
         verification_status: 'REJECTED_OCR_FAILURE',
@@ -58,12 +63,15 @@ serve(async (req) => {
       });
     }
 
+    console.log(`🔍 Searching with: Certificate ID: ${certificateId}, Seat Number: ${seatNumber}`);
+
     // Search in student_academics table
     let query = supabaseClient
       .from('student_academics')
       .select('*');
 
     if (certificateId) {
+      console.log(`🔍 Searching by certificate ID: ${certificateId}`);
       // First try to find by certificate ID in the certificates table
       const { data: certData } = await supabaseClient
         .from('certificates')
@@ -72,20 +80,25 @@ serve(async (req) => {
         .single();
       
       if (certData) {
+        console.log('✅ Found certificate in certificates table:', certData.id);
         // Found in certificates table, now get student data
         query = query.eq('certificate_id', certData.id);
       } else if (seatNumber) {
+        console.log('❌ Certificate ID not found, falling back to seat number search');
         // Fallback to seat number search
         query = query.eq('roll_number', seatNumber);
+      } else {
+        console.log('❌ Certificate ID not found and no seat number available');
       }
     } else if (seatNumber) {
+      console.log(`🔍 Searching by seat number: ${seatNumber}`);
       query = query.eq('roll_number', seatNumber);
     }
 
     const { data: studentRecords, error: dbError } = await query;
 
     if (dbError) {
-      console.error('Database query error:', dbError);
+      console.error('❌ Database query error:', dbError);
       return new Response(JSON.stringify({
         is_db_verified: false,
         verification_status: 'ERROR_DB_CHECK',
@@ -96,33 +109,48 @@ serve(async (req) => {
       });
     }
 
+    console.log(`📊 Database query returned ${studentRecords?.length || 0} records`);
+
     if (!studentRecords || studentRecords.length === 0) {
+      console.log('❌ No student records found in database');
       // Check tampering by looking for same image hash
-      await checkTamperingAttempts(supabaseClient, image_hash, seatNumber || certificateId);
+      const isTampering = await checkTamperingAttempts(supabaseClient, image_hash, seatNumber || certificateId);
+      console.log(`🔐 Tampering check result: ${isTampering}`);
       
       return new Response(JSON.stringify({
         is_db_verified: false,
         verification_status: 'REJECTED_NOT_FOUND',
         notes: `No official record found for ${certificateId ? 'Certificate ID: ' + certificateId : 'Seat No: ' + seatNumber}.`,
         mismatches: [],
-        is_tampering_suspected: false
+        is_tampering_suspected: isTampering
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
     const officialRecord = studentRecords[0];
-    console.log('Found official record:', officialRecord);
+    console.log('✅ Found official record:', {
+      id: officialRecord.id,
+      name: officialRecord.name,
+      department: officialRecord.department,
+      roll_number: officialRecord.roll_number
+    });
 
     // Compare extracted data with database record
     const mismatches: string[] = [];
+    console.log('🔍 Starting field comparison...');
 
     // Compare Name
     if (combinedData.name && officialRecord.name) {
       const ocrName = normalizeText(combinedData.name);
       const dbName = normalizeText(officialRecord.name);
+      console.log(`👤 Name comparison - OCR: "${ocrName}" vs DB: "${dbName}"`);
       if (ocrName !== dbName) {
-        mismatches.push(`Name (OCR: '${combinedData.name}', DB: '${officialRecord.name}')`);
+        const mismatch = `Name (OCR: '${combinedData.name}', DB: '${officialRecord.name}')`;
+        mismatches.push(mismatch);
+        console.log(`❌ Name mismatch: ${mismatch}`);
+      } else {
+        console.log('✅ Name matches');
       }
     }
 
@@ -130,18 +158,26 @@ serve(async (req) => {
     if (combinedData.sgpa) {
       const ocrSgpa = parseFloat(combinedData.sgpa);
       let sgpaMatched = false;
+      console.log(`📊 SGPA comparison - OCR: ${ocrSgpa}`);
       
       // Check against all semester SGPAs
       for (let i = 1; i <= 8; i++) {
         const dbSgpa = officialRecord[`sgpa_sem${i}`];
-        if (dbSgpa && Math.abs(ocrSgpa - parseFloat(dbSgpa)) <= 0.01) {
-          sgpaMatched = true;
-          break;
+        if (dbSgpa) {
+          const dbSgpaFloat = parseFloat(dbSgpa);
+          console.log(`📊 Checking semester ${i} SGPA: ${dbSgpaFloat}`);
+          if (Math.abs(ocrSgpa - dbSgpaFloat) <= 0.01) {
+            sgpaMatched = true;
+            console.log(`✅ SGPA match found in semester ${i}`);
+            break;
+          }
         }
       }
       
       if (!sgpaMatched) {
-        mismatches.push(`SGPA (OCR: ${combinedData.sgpa}, not found in any semester records)`);
+        const mismatch = `SGPA (OCR: ${combinedData.sgpa}, not found in any semester records)`;
+        mismatches.push(mismatch);
+        console.log(`❌ SGPA mismatch: ${mismatch}`);
       }
     }
 
@@ -164,21 +200,26 @@ serve(async (req) => {
     }
 
     // Check for tampering attempts
+    console.log('🔐 Checking for tampering attempts...');
     const isTamperingAttempt = await checkTamperingAttempts(supabaseClient, image_hash, seatNumber || certificateId);
+    console.log(`🔐 Tampering check result: ${isTamperingAttempt}`);
 
     // Determine final verification status
     let verificationStatus: string;
     let notes: string;
     let isDbVerified: boolean;
 
+    console.log(`📊 Total mismatches found: ${mismatches.length}`);
     if (mismatches.length === 0) {
       verificationStatus = 'VERIFIED';
       notes = 'All extracted details perfectly match the official database record.';
       isDbVerified = true;
+      console.log('✅ Verification PASSED - all fields match');
     } else {
       verificationStatus = 'REJECTED_MISMATCH';
       notes = `Mismatch found in fields: ${mismatches.join(', ')}`;
       isDbVerified = false;
+      console.log(`❌ Verification FAILED - mismatches: ${mismatches.join(', ')}`);
     }
 
     // Log the verification attempt
@@ -196,27 +237,36 @@ serve(async (req) => {
     };
 
     // Save verification log
+    console.log('💾 Saving verification log to database...');
     const { error: logError } = await supabaseClient
       .from('verification_logs')
       .insert(verificationLog);
 
     if (logError) {
-      console.error('Failed to save verification log:', logError);
+      console.error('❌ Failed to save verification log:', logError);
+    } else {
+      console.log('✅ Verification log saved successfully');
     }
 
-    return new Response(JSON.stringify({
+    const finalResponse = {
       is_db_verified: isDbVerified,
       verification_status: verificationStatus,
       notes: notes,
       mismatches: mismatches,
       is_tampering_suspected: isTamperingAttempt,
       official_record: officialRecord
-    }), {
+    };
+
+    console.log('📤 Sending final response:', finalResponse);
+    
+    return new Response(JSON.stringify(finalResponse), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
 
   } catch (error) {
-    console.error('Error in advanced-verification function:', error);
+    console.error('💥 Critical error in advanced-verification function:', error);
+    console.error('Stack trace:', error.stack);
+    
     return new Response(JSON.stringify({
       is_db_verified: false,
       verification_status: 'ERROR_DB_CHECK',
@@ -241,16 +291,35 @@ async function checkTamperingAttempts(
   identifier: string
 ): Promise<boolean> {
   try {
+    console.log(`🕵️ Checking tampering attempts for identifier: ${identifier}`);
+    console.log(`🔐 Current image hash: ${imageHash.substring(0, 16)}...`);
+    
     // Check if there are previous logs with same identifier but different image hash
-    const { data: previousLogs } = await supabaseClient
+    const { data: previousLogs, error } = await supabaseClient
       .from('verification_logs')
-      .select('image_hash')
+      .select('image_hash, created_at')
       .or(`ocr_extracted_data->>seatNumber.eq.${identifier},ocr_extracted_data->>certificateId.eq.${identifier}`)
       .neq('image_hash', imageHash);
 
-    return previousLogs && previousLogs.length > 0;
+    if (error) {
+      console.error('❌ Error querying verification logs:', error);
+      return false;
+    }
+
+    console.log(`📊 Found ${previousLogs?.length || 0} previous logs with different hashes`);
+    
+    if (previousLogs && previousLogs.length > 0) {
+      console.log('🚨 TAMPERING DETECTED: Same identifier with different image hashes found');
+      previousLogs.forEach((log, index) => {
+        console.log(`   ${index + 1}. Hash: ${log.image_hash.substring(0, 16)}... at ${log.created_at}`);
+      });
+      return true;
+    } else {
+      console.log('✅ No tampering detected');
+      return false;
+    }
   } catch (error) {
-    console.error('Error checking tampering attempts:', error);
+    console.error('❌ Error checking tampering attempts:', error);
     return false;
   }
 }

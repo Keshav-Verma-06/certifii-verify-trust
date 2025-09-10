@@ -202,6 +202,8 @@ export type Database = {
         Row: {
           blockchain_hash: string | null
           certificate_id: string
+          certificates: string | null
+          "certificates-upload": string | null
           course: string
           created_at: string | null
           digital_signature: string | null
@@ -226,6 +228,8 @@ export type Database = {
         Insert: {
           blockchain_hash?: string | null
           certificate_id: string
+          certificates?: string | null
+          "certificates-upload"?: string | null
           course: string
           created_at?: string | null
           digital_signature?: string | null
@@ -250,6 +254,8 @@ export type Database = {
         Update: {
           blockchain_hash?: string | null
           certificate_id?: string
+          certificates?: string | null
+          "certificates-upload"?: string | null
           course?: string
           created_at?: string | null
           digital_signature?: string | null
@@ -280,6 +286,99 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      file_uploads: {
+        Row: {
+          created_at: string | null
+          file_path: string
+          file_size: number
+          file_type: string
+          filename: string
+          id: string
+          institution_id: string
+          upload_status: string | null
+          uploaded_by: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          file_path: string
+          file_size: number
+          file_type: string
+          filename: string
+          id?: string
+          institution_id: string
+          upload_status?: string | null
+          uploaded_by?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          file_path?: string
+          file_size?: number
+          file_type?: string
+          filename?: string
+          id?: string
+          institution_id?: string
+          upload_status?: string | null
+          uploaded_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "file_uploads_institution_id_fkey"
+            columns: ["institution_id"]
+            isOneToOne: false
+            referencedRelation: "institutions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "file_uploads_uploaded_by_fkey"
+            columns: ["uploaded_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+        ]
+      }
+      flagged_certificates: {
+        Row: {
+          certificate_id: string
+          created_at: string
+          evidence: Json | null
+          id: string
+          institution: string | null
+          is_active: boolean
+          reason: string
+          report_count: number
+          severity: string
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          certificate_id: string
+          created_at?: string
+          evidence?: Json | null
+          id?: string
+          institution?: string | null
+          is_active?: boolean
+          reason: string
+          report_count?: number
+          severity: string
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          certificate_id?: string
+          created_at?: string
+          evidence?: Json | null
+          id?: string
+          institution?: string | null
+          is_active?: boolean
+          reason?: string
+          report_count?: number
+          severity?: string
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
       }
       forgery_reports: {
         Row: {
@@ -387,6 +486,7 @@ export type Database = {
       institutions: {
         Row: {
           address: string | null
+          auth_user_id: string | null
           blacklist_reason: string | null
           code: string
           contact_email: string | null
@@ -401,6 +501,7 @@ export type Database = {
         }
         Insert: {
           address?: string | null
+          auth_user_id?: string | null
           blacklist_reason?: string | null
           code: string
           contact_email?: string | null
@@ -415,6 +516,7 @@ export type Database = {
         }
         Update: {
           address?: string | null
+          auth_user_id?: string | null
           blacklist_reason?: string | null
           code?: string
           contact_email?: string | null
@@ -465,6 +567,135 @@ export type Database = {
         }
         Relationships: []
       }
+      student_academics: {
+        Row: {
+          certificate_id: string | null
+          created_at: string | null
+          department: string | null
+          division: string | null
+          id: string
+          institution_id: string | null
+          name: string
+          roll_number: string
+          sgpa_sem1: number | null
+          sgpa_sem2: number | null
+          sgpa_sem3: number | null
+          sgpa_sem4: number | null
+          sgpa_sem5: number | null
+          sgpa_sem6: number | null
+          sgpa_sem7: number | null
+          sgpa_sem8: number | null
+          source_file: string | null
+          updated_at: string | null
+          uploaded_by: string | null
+        }
+        Insert: {
+          certificate_id?: string | null
+          created_at?: string | null
+          department?: string | null
+          division?: string | null
+          id?: string
+          institution_id?: string | null
+          name: string
+          roll_number: string
+          sgpa_sem1?: number | null
+          sgpa_sem2?: number | null
+          sgpa_sem3?: number | null
+          sgpa_sem4?: number | null
+          sgpa_sem5?: number | null
+          sgpa_sem6?: number | null
+          sgpa_sem7?: number | null
+          sgpa_sem8?: number | null
+          source_file?: string | null
+          updated_at?: string | null
+          uploaded_by?: string | null
+        }
+        Update: {
+          certificate_id?: string | null
+          created_at?: string | null
+          department?: string | null
+          division?: string | null
+          id?: string
+          institution_id?: string | null
+          name?: string
+          roll_number?: string
+          sgpa_sem1?: number | null
+          sgpa_sem2?: number | null
+          sgpa_sem3?: number | null
+          sgpa_sem4?: number | null
+          sgpa_sem5?: number | null
+          sgpa_sem6?: number | null
+          sgpa_sem7?: number | null
+          sgpa_sem8?: number | null
+          source_file?: string | null
+          updated_at?: string | null
+          uploaded_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "student_academics_certificate_id_fkey"
+            columns: ["certificate_id"]
+            isOneToOne: false
+            referencedRelation: "certificates"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "student_academics_institution_id_fkey"
+            columns: ["institution_id"]
+            isOneToOne: false
+            referencedRelation: "institutions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      Student_Dataset_ordered: {
+        Row: {
+          Department: string | null
+          Division: string | null
+          Name: string | null
+          Roll_Number: string | null
+          Seat_Number: number | null
+          SGPA_Sem1: number | null
+          SGPA_Sem2: number | null
+          SGPA_Sem3: number | null
+          SGPA_Sem4: number | null
+          SGPA_Sem5: number | null
+          SGPA_Sem6: number | null
+          SGPA_Sem7: number | null
+          SGPA_Sem8: number | null
+        }
+        Insert: {
+          Department?: string | null
+          Division?: string | null
+          Name?: string | null
+          Roll_Number?: string | null
+          Seat_Number?: number | null
+          SGPA_Sem1?: number | null
+          SGPA_Sem2?: number | null
+          SGPA_Sem3?: number | null
+          SGPA_Sem4?: number | null
+          SGPA_Sem5?: number | null
+          SGPA_Sem6?: number | null
+          SGPA_Sem7?: number | null
+          SGPA_Sem8?: number | null
+        }
+        Update: {
+          Department?: string | null
+          Division?: string | null
+          Name?: string | null
+          Roll_Number?: string | null
+          Seat_Number?: number | null
+          SGPA_Sem1?: number | null
+          SGPA_Sem2?: number | null
+          SGPA_Sem3?: number | null
+          SGPA_Sem4?: number | null
+          SGPA_Sem5?: number | null
+          SGPA_Sem6?: number | null
+          SGPA_Sem7?: number | null
+          SGPA_Sem8?: number | null
+        }
+        Relationships: []
+      }
       system_alerts: {
         Row: {
           created_at: string | null
@@ -501,6 +732,57 @@ export type Database = {
           recipient_role?: Database["public"]["Enums"]["user_role"] | null
           severity?: Database["public"]["Enums"]["alert_severity"] | null
           title?: string
+        }
+        Relationships: []
+      }
+      verification_logs: {
+        Row: {
+          created_at: string
+          id: string
+          image_hash: string | null
+          image_url: string | null
+          is_db_verified: boolean | null
+          is_tampering_suspected: boolean | null
+          mismatches: string[] | null
+          notes: string | null
+          ocr_extracted_data: Json | null
+          qr_verification: Json | null
+          student_record_id: string | null
+          updated_at: string
+          user_input_data: Json | null
+          verification_status: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          image_hash?: string | null
+          image_url?: string | null
+          is_db_verified?: boolean | null
+          is_tampering_suspected?: boolean | null
+          mismatches?: string[] | null
+          notes?: string | null
+          ocr_extracted_data?: Json | null
+          qr_verification?: Json | null
+          student_record_id?: string | null
+          updated_at?: string
+          user_input_data?: Json | null
+          verification_status: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          image_hash?: string | null
+          image_url?: string | null
+          is_db_verified?: boolean | null
+          is_tampering_suspected?: boolean | null
+          mismatches?: string[] | null
+          notes?: string | null
+          ocr_extracted_data?: Json | null
+          qr_verification?: Json | null
+          student_record_id?: string | null
+          updated_at?: string
+          user_input_data?: Json | null
+          verification_status?: string
         }
         Relationships: []
       }
@@ -550,12 +832,45 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      v_flagged_active: {
+        Row: {
+          certificate_id: string | null
+          created_at: string | null
+          id: string | null
+          institution: string | null
+          reason: string | null
+          report_count: number | null
+          severity: string | null
+        }
+        Insert: {
+          certificate_id?: string | null
+          created_at?: string | null
+          id?: string | null
+          institution?: string | null
+          reason?: string | null
+          report_count?: number | null
+          severity?: string | null
+        }
+        Update: {
+          certificate_id?: string | null
+          created_at?: string | null
+          id?: string | null
+          institution?: string | null
+          reason?: string | null
+          report_count?: number | null
+          severity?: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       get_user_role: {
         Args: { user_uuid: string }
         Returns: Database["public"]["Enums"]["user_role"]
+      }
+      is_admin: {
+        Args: Record<PropertyKey, never>
+        Returns: boolean
       }
     }
     Enums: {

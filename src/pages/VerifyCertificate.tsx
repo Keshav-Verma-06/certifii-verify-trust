@@ -37,7 +37,8 @@ export const VerifyCertificate = () => {
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const uploadedFile = event.target.files?.[0];
     if (uploadedFile) {
-      if (uploadedFile.type.includes('pdf') || uploadedFile.type.includes('image')) {
+      // Only allow image files for OCR processing
+      if (uploadedFile.type.startsWith('image/')) {
         setFile(uploadedFile);
         toast({
           title: "File uploaded successfully",
@@ -46,7 +47,7 @@ export const VerifyCertificate = () => {
       } else {
         toast({
           title: "Invalid file type",
-          description: "Please upload a PDF or image file.",
+          description: "Please upload an image file (JPG, PNG, GIF, BMP, WEBP). PDF files are not supported for OCR.",
           variant: "destructive",
         });
       }
@@ -61,7 +62,8 @@ export const VerifyCertificate = () => {
     event.preventDefault();
     const droppedFile = event.dataTransfer.files[0];
     if (droppedFile) {
-      if (droppedFile.type.includes('pdf') || droppedFile.type.includes('image')) {
+      // Only allow image files for OCR processing
+      if (droppedFile.type.startsWith('image/')) {
         setFile(droppedFile);
         toast({
           title: "File uploaded successfully", 
@@ -70,7 +72,7 @@ export const VerifyCertificate = () => {
       } else {
         toast({
           title: "Invalid file type",
-          description: "Please upload a PDF or image file.",
+          description: "Please upload an image file (JPG, PNG, GIF, BMP, WEBP). PDF files are not supported for OCR.",
           variant: "destructive",
         });
       }
@@ -223,7 +225,7 @@ export const VerifyCertificate = () => {
                       <Upload className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
                       <p className="text-lg font-medium mb-2">Drop certificate here</p>
                       <p className="text-sm text-muted-foreground">
-                        or click to browse (PDF, JPG, PNG)
+                        or click to browse (JPG, PNG, GIF, BMP, WEBP)
                       </p>
                     </div>
                   )}
@@ -231,7 +233,7 @@ export const VerifyCertificate = () => {
                 <input
                   id="file-upload"
                   type="file"
-                  accept=".pdf,.jpg,.jpeg,.png"
+                  accept="image/*"
                   onChange={handleFileUpload}
                   className="hidden"
                 />

@@ -43,6 +43,12 @@ serve(async (req) => {
     const formData = await req.formData();
     const file = formData.get('file') as File;
     const institutionId = (formData.get('institution_id') as string) || null;
+    const sessionIdFromClient = (formData.get('session_id') as string) || null;
+    const offsetParam = Number((formData.get('offset') as string) || '0');
+    const chunkSizeParam = Number((formData.get('chunk_size') as string) || '300');
+    const offset = Number.isFinite(offsetParam) && offsetParam >= 0 ? offsetParam : 0;
+    const chunkSize = Number.isFinite(chunkSizeParam) && chunkSizeParam > 0 ? Math.min(chunkSizeParam, 1000) : 300;
+    console.log('[bulk-upload] chunk params:', { offset, chunkSize, sessionIdFromClient });
     console.log('[bulk-upload] institutionId present:', Boolean(institutionId), 'value:', institutionId ?? 'null');
 
     if (!file) {
@@ -53,13 +59,18 @@ serve(async (req) => {
 
     // Upload file to storage for tracking
     const fileName = `${crypto.randomUUID()}-${file.name}`;
-    const storageRes = await adminClient.storage
-      .from('bulk-uploads')
-      .upload(fileName, file);
-    if ((storageRes as any)?.error) {
-      console.error('[bulk-upload] storage upload error:', (storageRes as any).error);
+    // Only upload the file to storage on the first chunk (offset 0)
+    if (offset === 0) {
+      const storageRes = await adminClient.storage
+        .from('bulk-uploads')
+        .upload(fileName, file);
+      if ((storageRes as any)?.error) {
+        console.error('[bulk-upload] storage upload error:', (storageRes as any).error);
+      } else {
+        console.log('[bulk-upload] storage upload ok, path:', fileName);
+      }
     } else {
-      console.log('[bulk-upload] storage upload ok, path:', fileName);
+      console.log('[bulk-upload] skipping storage upload for offset > 0');
     }
 
     // Parse CSV/Excel file
@@ -69,23 +80,40 @@ serve(async (req) => {
     const rows = parse(fileContent, { skipFirstRow: false }) as string[][];
     console.log('[bulk-upload] parsed rows (including potential header):', rows.length);
 
-    // Create bulk upload session
-    const { data: session, error: sessionError } = await supabaseClient
-      .from('bulk_upload_sessions')
-      .insert({
-        institution_id: institutionId,
-        uploaded_by: (await supabaseClient.auth.getUser()).data.user?.id,
-        file_name: file.name,
-        total_records: rows.length,
-        status: 'processing'
-      })
-      .select()
-      .single();
-
-    if (sessionError) {
-      throw new Error(`Failed to create upload session: ${sessionError.message}`);
+    // Create or reuse bulk upload session
+    let session = null as any;
+    if (sessionIdFromClient) {
+      const { data: existingSession, error: getErr } = await adminClient
+        .from('bulk_upload_sessions')
+        .select('*')
+        .eq('id', sessionIdFromClient)
+        .maybeSingle();
+      if (getErr) {
+        throw new Error(`Failed to fetch upload session: ${getErr.message}`);
+      }
+      session = existingSession;
     }
-    console.log('[bulk-upload] created session id:', session.id);
+    if (!session) {
+      const totalRecords = rows.length; // includes header; we'll store actual total later below
+      const { data: newSession, error: sessionError } = await adminClient
+        .from('bulk_upload_sessions')
+        .insert({
+          institution_id: institutionId,
+          uploaded_by: (await supabaseClient.auth.getUser()).data.user?.id,
+          file_name: file.name,
+          total_records: 0, // will set after header detection
+          status: 'processing'
+        })
+        .select()
+        .single();
+      if (sessionError) {
+        throw new Error(`Failed to create upload session: ${sessionError.message}`);
+      }
+      session = newSession;
+      console.log('[bulk-upload] created session id:', session.id);
+    } else {
+      console.log('[bulk-upload] using existing session id:', session.id);
+    }
 
     let successful = 0;
     let failed = 0;
@@ -146,8 +174,24 @@ serve(async (req) => {
       }
     }
 
-    // Process each row
-    for (let i = dataStartIndex; i < rows.length; i++) {
+    // Update total_records on first chunk once we know header offset
+    if (offset === 0) {
+      const totalDataRows = rows.length - dataStartIndex;
+      await adminClient
+        .from('bulk_upload_sessions')
+        .update({ total_records: totalDataRows })
+        .eq('id', session.id);
+      console.log('[bulk-upload] set total_records:', totalDataRows);
+    }
+
+    // Determine chunk bounds
+    const chunkStart = dataStartIndex + offset;
+    const chunkEnd = Math.min(chunkStart + chunkSize, rows.length);
+    const chunkCount = Math.max(0, chunkEnd - chunkStart);
+    console.log('[bulk-upload] processing chunk:', { chunkStart, chunkEnd, chunkCount });
+
+    // Process each row in the chunk
+    for (let i = chunkStart; i < chunkEnd; i++) {
       try {
         const row = rows[i];
 
@@ -266,7 +310,7 @@ serve(async (req) => {
         }
 
         successful++;
-        if ((i - dataStartIndex + 1) % 100 === 0) {
+        if (((i - dataStartIndex + 1) % 100) === 0) {
           console.log('[bulk-upload] processed rows:', (i - dataStartIndex + 1), 'success:', successful, 'failed:', failed);
         }
 
@@ -278,31 +322,70 @@ serve(async (req) => {
       }
 
       // Update progress periodically
-      if ((i + 1) % 10 === 0 || i === rows.length - 1) {
-        await adminClient
+      if ((i + 1) % 50 === 0 || i === chunkEnd - 1) {
+        // incrementally update progress, adding to any existing counts
+        const { data: current, error: curErr } = await adminClient
           .from('bulk_upload_sessions')
-          .update({
-            processed_records: i + 1 - dataStartIndex,
-            successful_records: successful,
-            failed_records: failed,
-            error_log: errors.length > 0 ? { errors } : null
-          })
-          .eq('id', session.id);
+          .select('processed_records, successful_records, failed_records')
+          .eq('id', session.id)
+          .single();
+        if (!curErr && current) {
+          await adminClient
+            .from('bulk_upload_sessions')
+            .update({
+              processed_records: Math.min((current.processed_records || 0) + 1, (rows.length - dataStartIndex)),
+              successful_records: (current.successful_records || 0) + (errors.length > 0 ? 0 : 1),
+              failed_records: (current.failed_records || 0) + (errors.length > 0 ? 1 : 0),
+              error_log: errors.length > 0 ? { errors } : current.error_log || null
+            })
+            .eq('id', session.id);
+        }
       }
     }
 
-    // Mark session as completed
-    await adminClient
-      .from('bulk_upload_sessions')
-      .update({
-        status: 'completed',
-        completed_at: new Date().toISOString(),
-        successful_records: successful,
-        failed_records: failed,
-        error_log: errors.length > 0 ? { errors } : null
-      })
-      .eq('id', session.id);
-    console.log('[bulk-upload] completed session', session.id, 'total:', rows.length - dataStartIndex, 'success:', successful, 'failed:', failed);
+    const moreRemaining = chunkEnd < rows.length;
+    if (moreRemaining) {
+      // Update session progress cumulatively for this chunk
+      const { data: current, error: curErr } = await adminClient
+        .from('bulk_upload_sessions')
+        .select('processed_records, successful_records, failed_records')
+        .eq('id', session.id)
+        .single();
+      if (!curErr && current) {
+        await adminClient
+          .from('bulk_upload_sessions')
+          .update({
+            processed_records: Math.min((current.processed_records || 0) + chunkCount, (rows.length - dataStartIndex)),
+            successful_records: (current.successful_records || 0) + successful,
+            failed_records: (current.failed_records || 0) + failed,
+            error_log: errors.length > 0 ? { errors } : current.error_log || null
+          })
+          .eq('id', session.id);
+      }
+      console.log('[bulk-upload] chunk completed; more remaining. Next offset:', offset + chunkCount);
+    } else {
+      // Finalize session
+      const { data: current, error: curErr } = await adminClient
+        .from('bulk_upload_sessions')
+        .select('processed_records, successful_records, failed_records')
+        .eq('id', session.id)
+        .single();
+      const finalProcessed = (current?.processed_records || 0) + chunkCount;
+      const finalSuccess = (current?.successful_records || 0) + successful;
+      const finalFailed = (current?.failed_records || 0) + failed;
+      await adminClient
+        .from('bulk_upload_sessions')
+        .update({
+          status: 'completed',
+          completed_at: new Date().toISOString(),
+          processed_records: Math.min(finalProcessed, (rows.length - dataStartIndex)),
+          successful_records: finalSuccess,
+          failed_records: finalFailed,
+          error_log: errors.length > 0 ? { errors } : null
+        })
+        .eq('id', session.id);
+      console.log('[bulk-upload] completed session', session.id, 'total:', rows.length - dataStartIndex, 'success:', finalSuccess, 'failed:', finalFailed);
+    }
 
     // Create system alert for completion
     await supabaseClient
@@ -331,7 +414,7 @@ serve(async (req) => {
         }
       });
 
-    const responseBody = {
+    const responseBody: any = {
       success: true,
       session_id: session.id,
       total_records: rows.length - dataStartIndex,
@@ -339,6 +422,12 @@ serve(async (req) => {
       failed_records: failed,
       errors: errors.slice(0, 10) // Return first 10 errors
     };
+    if (moreRemaining) {
+      responseBody.next_offset = offset + chunkCount;
+      responseBody.more = true;
+    } else {
+      responseBody.more = false;
+    }
     console.log('[bulk-upload] returning 200 OK with summary:', responseBody);
     return new Response(JSON.stringify(responseBody), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },

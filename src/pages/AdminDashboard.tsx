@@ -16,7 +16,6 @@ import {
 } from "lucide-react";
 import { AdminLogin } from "@/components/auth/AdminLogin";
 import { CertificateDetailsModal } from "@/components/modals/CertificateDetailsModal";
-// Import Supabase client for database operations
 import { supabase } from "@/integrations/supabase/client";
 
 export const AdminDashboard = () => {
@@ -72,40 +71,34 @@ export const AdminDashboard = () => {
       dateAdded: "2024-01-03"
     }
   ]);
-  const [flaggedCertificatesState, setFlaggedCertificatesState] = useState<any[]>([]);
+  const [flaggedCertificatesState, setFlaggedCertificatesState] = useState<any[]>([
+    {
+      id: "CERT001",
+      certificateId: "BC123456",
+      reason: "Digital signature mismatch",
+      institution: "Unknown Institution",
+      reportCount: 5,
+      severity: "high"
+    },
+    {
+      id: "CERT002", 
+      certificateId: "MBA789012",
+      reason: "Invalid seal pattern",
+      institution: "Fake Business School",
+      reportCount: 3,
+      severity: "medium"
+    },
+    {
+      id: "CERT003",
+      certificateId: "BTech345678",
+      reason: "Certificate ID not found",
+      institution: "Non-existent College",
+      reportCount: 8,
+      severity: "high"
+    }
+  ]);
 
-  // Initialize flagged certificates data and fetch blacklist data from database
   useEffect(() => {
-    const initialFlaggedCertificates = [
-      {
-        id: "CERT001",
-        certificateId: "BC123456",
-        reason: "Digital signature mismatch",
-        institution: "Unknown Institution",
-        reportCount: 5,
-        severity: "high"
-      },
-      {
-        id: "CERT002", 
-        certificateId: "MBA789012",
-        reason: "Invalid seal pattern",
-        institution: "Fake Business School",
-        reportCount: 3,
-        severity: "medium"
-      },
-      {
-        id: "CERT003",
-        certificateId: "BTech345678",
-        reason: "Certificate ID not found",
-        institution: "Non-existent College",
-        reportCount: 8,
-        severity: "high"
-      }
-    ];
-    
-    setFlaggedCertificatesState(initialFlaggedCertificates);
-    
-    // Backend → Frontend flow: Fetch blacklist data from database
     const fetchBlacklistData = async () => {
       try {
         // Fetch blacklisted certificates
@@ -114,10 +107,9 @@ export const AdminDashboard = () => {
           .select('*')
           .eq('entity_type', 'certificate')
           .eq('is_active', true);
-          
+
         if (certError) throw certError;
-        
-        // Transform certificate data from backend response
+
         const formattedCertificates = certificateData && certificateData.length > 0 ? 
           certificateData.map(entry => ({
             certificateId: entry.entity_id,
@@ -125,17 +117,16 @@ export const AdminDashboard = () => {
             reason: entry.reason,
             dateAdded: new Date(entry.created_at).toISOString().split('T')[0]
           })) : [];
-        
+
         // Fetch blacklisted institutions
         const { data: institutionData, error: instError } = await supabase
           .from('blacklist_entries')
           .select('*')
           .eq('entity_type', 'institution')
           .eq('is_active', true);
-          
+
         if (instError) throw instError;
-        
-        // Transform institution data from backend response
+
         const formattedInstitutions = institutionData && institutionData.length > 0 ?
           institutionData.map(entry => ({
             name: entry.entity_id,
@@ -143,31 +134,54 @@ export const AdminDashboard = () => {
             reason: entry.reason,
             dateAdded: new Date(entry.created_at).toISOString().split('T')[0]
           })) : [];
-        
-        // Update frontend state with data from backend
-        // Merge with our initial state data to maintain demo data
+
         setBlacklistedCertificates(prev => {
-          // Keep only entries that aren't in the backend response
           const backendIds = formattedCertificates.map(c => c.certificateId);
           const filteredPrev = prev.filter(p => !backendIds.includes(p.certificateId) && p.status !== 'verified');
           return [...filteredPrev, ...formattedCertificates];
         });
-        
+
         setBlacklistedInstitutions(prev => {
-          // Keep only entries that aren't in the backend response
           const backendNames = formattedInstitutions.map(i => i.name);
           const filteredPrev = prev.filter(p => !backendNames.includes(p.name));
           return [...filteredPrev, ...formattedInstitutions];
         });
-        
+
         console.log('Blacklist data fetched successfully from backend');
       } catch (error) {
         console.error('Error fetching blacklist data:', error);
-        // Don't show alert to avoid disrupting user experience with demo data
       }
     };
     
     fetchBlacklistData();
+
+    // Fetch flagged certificates from Supabase
+    const fetchFlaggedCertificates = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('flagged_certificates')
+          .select('*')
+          .eq('is_active', true);
+        
+        if (error) throw error;
+
+        if (data && data.length > 0) {
+          const formattedFlagged = data.map(item => ({
+            id: item.id,
+            certificateId: item.certificate_id,
+            reason: item.reason || (item.evidence && item.evidence.note) || 'No reason given',
+            institution: item.institution || (item.evidence && item.evidence.institution) || 'Unknown Institution',
+            reportCount: item.report_count || 1,
+            severity: item.severity || 'medium',
+          }));
+          setFlaggedCertificatesState(formattedFlagged);
+        }
+      } catch (error) {
+        console.error('Error fetching flagged certificates:', error);
+      }
+    };
+
+    fetchFlaggedCertificates();
   }, []);
 
   const handleAuthSuccess = (user: any) => {
@@ -274,11 +288,8 @@ export const AdminDashboard = () => {
     }
   };
 
-  // Function to add certificate to blacklist
   const addToBlacklist = async (cert: any) => {
     try {
-      // Frontend → Backend → Database flow
-      // First, send data to backend (Supabase in this case)
       const { data, error } = await supabase
         .from('blacklist_entries')
         .insert({
@@ -293,12 +304,9 @@ export const AdminDashboard = () => {
       
       if (error) throw error;
       
-      // Backend → Frontend flow
-      // After successful database operation, update the UI
       const today = new Date();
-      const formattedDate = today.toISOString().split('T')[0]; // YYYY-MM-DD format
+      const formattedDate = today.toISOString().split('T')[0]; // YYYY-MM-DD
       
-      // Create a new blacklist entry with data from backend response
       const newBlacklistEntry = {
         certificateId: cert.certificateId,
         institution: cert.institution,
@@ -306,15 +314,12 @@ export const AdminDashboard = () => {
         dateAdded: formattedDate
       };
       
-      // Add to blacklist in local state
       setBlacklistedCertificates(prev => [...prev, newBlacklistEntry]);
       
-      // Remove from flagged certificates
       setFlaggedCertificatesState(prev => 
         prev.filter(flagged => flagged.id !== cert.id)
       );
       
-      // Show success message
       alert(`Certificate ${cert.certificateId} has been added to the blacklist.`);
     } catch (error) {
       console.error('Error adding certificate to blacklist:', error);
@@ -322,11 +327,8 @@ export const AdminDashboard = () => {
     }
   };
   
-  // Function to add institution to blacklist
   const addInstitutionToBlacklist = async (institution: any) => {
     try {
-      // Frontend → Backend → Database flow
-      // First, send data to backend (Supabase in this case)
       const { data, error } = await supabase
         .from('blacklist_entries')
         .insert({
@@ -341,12 +343,9 @@ export const AdminDashboard = () => {
       
       if (error) throw error;
       
-      // Backend → Frontend flow
-      // After successful database operation, update the UI
       const today = new Date();
-      const formattedDate = today.toISOString().split('T')[0]; // YYYY-MM-DD format
+      const formattedDate = today.toISOString().split('T')[0];
       
-      // Create a new blacklist entry with data from backend response
       const newBlacklistEntry = {
         name: institution.name,
         location: institution.location || 'Undisclosed',
@@ -354,16 +353,15 @@ export const AdminDashboard = () => {
         dateAdded: formattedDate
       };
       
-      // Add to blacklist in local state
       setBlacklistedInstitutions(prev => [...prev, newBlacklistEntry]);
       
-      // Show success message
       alert(`Institution ${institution.name} has been added to the blacklist.`);
     } catch (error) {
       console.error('Error adding institution to blacklist:', error);
       alert('Failed to add institution to blacklist. Please try again.');
     }
   };
+
 
   return (
     <div className="container mx-auto px-4 lg:px-8 py-8">
@@ -384,7 +382,6 @@ export const AdminDashboard = () => {
           </div>
         </div>
 
-        {/* Stats Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
           {stats.map((stat, index) => (
             <Card key={index} className="p-6">
@@ -523,14 +520,12 @@ export const AdminDashboard = () => {
               <div className="flex justify-between items-center mb-6">
                 <h3 className="text-xl font-semibold">Blacklist Management</h3>
                 <Button onClick={() => {
-                  // Get institution details from user
                   const name = prompt("Enter institution name:");
                   if (!name) return;
                   
                   const location = prompt("Enter institution location (optional):");
                   const reason = prompt("Enter reason for blacklisting:") || "Suspicious activity";
                   
-                  // Add to blacklist
                   addInstitutionToBlacklist({
                     name,
                     location: location || "Undisclosed",
@@ -582,11 +577,7 @@ export const AdminDashboard = () => {
                                   size="sm"
                                   onClick={async () => {
                                     try {
-                                      // Get the certificate to remove
                                       const removedCert = blacklistedCertificates[index];
-                                      
-                                      // Frontend → Backend → Database flow
-                                      // First, send data to backend (Supabase in this case)
                                       const { data, error } = await supabase
                                         .from('blacklist_entries')
                                         .update({ is_active: false })
@@ -596,13 +587,10 @@ export const AdminDashboard = () => {
                                       
                                       if (error) throw error;
                                       
-                                      // Backend → Frontend flow
-                                      // After successful database operation, update the UI
                                       setBlacklistedCertificates(prev => 
                                         prev.filter((_, i) => i !== index)
                                       );
                                       
-                                      // Show success message
                                       alert(`Certificate ${removedCert.certificateId} has been removed from the blacklist.`);
                                     } catch (error) {
                                       console.error('Error removing certificate from blacklist:', error);
@@ -655,11 +643,7 @@ export const AdminDashboard = () => {
                                   size="sm"
                                   onClick={async () => {
                                     try {
-                                      // Get the institution to remove
                                       const removedInstitution = blacklistedInstitutions[index];
-                                      
-                                      // Frontend → Backend → Database flow
-                                      // First, send data to backend (Supabase in this case)
                                       const { data, error } = await supabase
                                         .from('blacklist_entries')
                                         .update({ is_active: false })
@@ -669,13 +653,10 @@ export const AdminDashboard = () => {
                                       
                                       if (error) throw error;
                                       
-                                      // Backend → Frontend flow
-                                      // After successful database operation, update the UI
                                       setBlacklistedInstitutions(prev => 
                                         prev.filter((_, i) => i !== index)
                                       );
                                       
-                                      // Show success message
                                       alert(`Institution ${removedInstitution.name} has been removed from the blacklist.`);
                                     } catch (error) {
                                       console.error('Error removing institution from blacklist:', error);

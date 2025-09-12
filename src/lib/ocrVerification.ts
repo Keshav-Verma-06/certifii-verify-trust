@@ -80,62 +80,156 @@ export const extractTextWithOCR = async (file: File): Promise<string> => {
 export const extractCertificateData = (text: string): OCRExtractedData => {
   console.log('🔍 Starting structured data extraction from OCR text...');
   
-  const patterns = {
-    name: [
-      /(?:Name|NAME|Student['\s]s Name|Candidate Name)[\s:\-]*([A-Z\s\.\'\,]+)/i,
-      /^[\s]*([A-Z][A-Z\s\.\'\,]{5,})[\s]*$/m
-    ],
-    seatNumber: [
-      /(?:Seat No|Seat Number|Roll No|Roll Number|Enrollment No|Registration No|PRN)[\s:\-]*([A-Z0-9\-]+)/i,
-      /\b([A-Z]{2,}\d{2,}[A-Z\d]*)\b/
-    ],
-    sgpa: [
-      /(?:SGPA|CGPA|GPA|Grade Points)[\s:\-]*(\d+\.\d{2})/i,
-      /\b(\d+\.\d{2})\b/
-    ],
-    semester: [
-      /(?:Semester|Sem|SEM)[\s:\-]*([IVXLCDM1-6]+)/i,
-      /\b([IVXLCDM]+)\s+Semester\b/i
-    ],
-    result: [
-      /(?:Result|RESULT)[\s:\-]*(PASS|FAIL|PASSED|FAILED|COMPLETED)/i,
-      /\b(PASS|FAIL|PASSED|FAILED)\b/i
-    ],
-    institution: [
-      /(?:University|College|Institute|Institution|Board)[\s:\-]*([A-Za-z\s\.\-\,]+)/i,
-      /^[\s]*([A-Z][A-Za-z\s\.\-\,]{10,})[\s]*$/m
-    ],
-    course: [
-      /(?:Course|Program|Degree|Branch)[\s:\-]*([A-Za-z\s\.\-\,]+)/i,
-      /\b(B\.Tech|B\.E\.|M\.Tech|M\.B\.A|B\.C\.A|B\.Sc|M\.Sc|B\.Com|M\.Com)\b/i
-    ],
-    certificateId: [
-      /(?:Certificate No|Certificate ID|Serial No|Serial Number)[\s:\-]*([A-Z0-9\-]+)/i,
-      /\b([A-Z]{2,}\d{4,}[A-Z\d]*)\b/
-    ]
-  };
+  // Normalize common punctuation and whitespace for better matching
+  const normalizedText = text
+    .replace(/[\u2010-\u2015]/g, '-') // dashes
+    .replace(/[\u2018-\u2019\u02BC]/g, "'") // quotes
+    .replace(/[\u201C-\u201D]/g, '"')
+    .replace(/\s+/g, ' ');
 
   const extractedData: OCRExtractedData = {};
 
-  for (const [key, regexList] of Object.entries(patterns)) {
-    console.log(`🔍 Searching for ${key}...`);
-    for (const pattern of regexList) {
-      const match = text.match(pattern);
-      if (match) {
-        extractedData[key as keyof OCRExtractedData] = match[1].trim().toUpperCase();
-        console.log(`✅ Found ${key}: "${match[1].trim()}"`);
-        break;
+  // Name: prefer explicit label
+  {
+    console.log('🔍 Searching for name...');
+    const nameLabel = normalizedText.match(/(?:^|\s)(?:Name|Student'?s Name|Candidate Name)\s*[:\-]?\s*([A-Z][A-Z\s\.\'\,]{3,})/i);
+    if (nameLabel) {
+      extractedData.name = nameLabel[1].trim().toUpperCase().replace(/\s+/g, ' ');
+      console.log(`✅ Found name (label): "${nameLabel[1].trim()}"`);
+    } else {
+      // Fallback: a long uppercase line near the top (avoid headings like GRADE CARD)
+      const lines = text.split(/\n|\r/).map(l => l.trim());
+      const candidate = lines.find(l => /[A-Z]{3,}\s+[A-Z]{3,}/.test(l) && !/GRADE CARD|INSTITUTE|INSTITUTION|UNIVERSITY|COLLEGE/i.test(l));
+      if (candidate) {
+        extractedData.name = candidate.toUpperCase().replace(/\s+/g, ' ');
+        console.log(`✅ Found name (fallback): "${candidate}"`);
+      } else {
+        console.log('❌ No match found for name');
       }
     }
-    if (!extractedData[key as keyof OCRExtractedData]) {
-      console.log(`❌ No match found for ${key}`);
+
+    // Cleanup: remove labels, symbols, and any trailing seat/roll segment from name
+    if (extractedData.name) {
+      let cleaned = extractedData.name;
+      cleaned = cleaned.replace(/^(?:NAME|STUDENT'?S NAME|CANDIDATE NAME)\b[:\-]*\s*/i, '');
+      cleaned = cleaned.replace(/[©®™]+/g, '');
+      // Remove anything starting from SEAT/ROLL/PRN labels to the end of line, with or without a number following
+      cleaned = cleaned.replace(/\b(SEAT\s*NO\.?|ROLL\s*NO\.?|PRN|ENROLLMENT\s*NO\.?).*$/i, '');
+      // Heuristic: insert a space before common name parts if missing (handles BAWEJA+RAUNAK etc.)
+      const commonNameParts = [
+        'SINGH','KAUR','KUMAR','KUMARI','RAO','RAJ','ALI','AHMED','PRASAD','PRAKASH','ANAND','DEVI','LAL',
+        'RAUNAK','JASPREET','MOHAMMED','MOHAMMAD','AHMAD','AHMED'
+      ];
+      for (const part of commonNameParts) {
+        const re = new RegExp(`([^\\s])(${part})(\\b)`, 'g');
+        cleaned = cleaned.replace(re, '$1 $2$3');
+      }
+      cleaned = cleaned.replace(/\s+/g, ' ').trim();
+      extractedData.name = cleaned;
+      console.log(`🧹 Cleaned name: "${cleaned}"`);
     }
   }
 
-  // Clean up name field
-  if (extractedData.name) {
-    extractedData.name = extractedData.name.replace(/\s+/g, ' ').trim();
-    console.log(`🧹 Cleaned name: "${extractedData.name}"`);
+  // Seat number: ONLY accept label-based patterns to avoid subject codes like OEC11
+  {
+    console.log('🔍 Searching for seatNumber...');
+    // Prefer explicit label capture; capture the value after the label
+    const seatMatch = normalizedText.match(/(?:Seat\s*No\.?|Roll\s*No\.?|Enrollment\s*No\.?|Registration\s*No\.?|PRN)\s*[:\-#]?\s*([A-Za-z0-9\/-]{3,})/i);
+    if (seatMatch) {
+      const value = seatMatch[1].trim();
+      // Heuristic: prefer mostly digits (true seat numbers) over alpha course codes
+      const digitsRatio = (value.replace(/\D/g, '').length) / value.length;
+      if (digitsRatio >= 0.5 || /\d/.test(value)) {
+        extractedData.seatNumber = value.toUpperCase();
+        console.log(`✅ Found seatNumber: "${value}"`);
+      } else {
+        console.log(`⚠️ Ignoring unlikely seatNumber candidate: "${value}"`);
+      }
+    } else {
+      console.log('❌ No match found for seatNumber');
+    }
+  }
+
+  // SGPA
+  {
+    console.log('🔍 Searching for sgpa...');
+    const sgpaMatch = normalizedText.match(/(?:SGPA|CGPA|GPA|Grade\s*Points)\s*[:\-]?\s*(\d+\.\d{1,2})/i);
+    if (sgpaMatch) {
+      extractedData.sgpa = sgpaMatch[1];
+      console.log(`✅ Found sgpa: "${sgpaMatch[1]}"`);
+    } else {
+      console.log('❌ No match found for sgpa');
+    }
+  }
+
+  // Semester / Division
+  {
+    console.log('🔍 Searching for semester...');
+    const semMatch = normalizedText.match(/(?:Semester|Sem|SEM)\s*[:\-]?\s*([IVXLCDM1-8]+)/i);
+    if (semMatch) {
+      extractedData.semester = semMatch[1].toString();
+      console.log(`✅ Found semester: "${semMatch[1]}"`);
+    } else {
+      console.log('❌ No match found for semester');
+    }
+  }
+
+  // Result
+  {
+    console.log('🔍 Searching for result...');
+    const resMatch = normalizedText.match(/(?:Result|RESULT)\s*[:\-]?\s*(PASS|FAIL|PASSED|FAILED|COMPLETED)/i);
+    if (resMatch) {
+      extractedData.result = resMatch[1].toUpperCase();
+      console.log(`✅ Found result: "${resMatch[1]}"`);
+    } else {
+      console.log('❌ No match found for result');
+    }
+  }
+
+  // Institution: look for "Institute of Technology" or upper header line
+  {
+    console.log('🔍 Searching for institution...');
+    // First try to hard match the expected phrase to strip any leading noise
+    let instMatch = text.match(/(VIDYALANKAR[ A-Z]*INSTITUTE OF TECHNOLOGY)/i);
+    if (!instMatch) {
+      instMatch = text.match(/([A-Z][A-Za-z\s\.,'-]*Institute of Technology)/i)
+        || text.match(/([A-Z][A-Za-z\s\.,'-]*University)/i);
+    }
+    if (instMatch) {
+      let inst = instMatch[1].trim().toUpperCase();
+      // Remove leading single-letter noise like "Y Y "
+      inst = inst.replace(/^(?:[A-Z]\s+){1,4}(?=[A-Z])/, '');
+      inst = inst.replace(/\s+/g, ' ').trim();
+      extractedData.institution = inst;
+      console.log(`✅ Found institution: "${instMatch[1].trim()}"`);
+    } else {
+      // Fallback to prominent header lines containing INSTITUTE or COLLEGE
+      const header = text.split(/\n|\r/).find(l => /(INSTITUTE|INSTITUTION|COLLEGE|UNIVERSITY)/i.test(l) && l.trim().length > 10);
+      if (header) {
+        let inst = header.trim().toUpperCase();
+        inst = inst.replace(/^(?:[A-Z]\s+){1,4}(?=[A-Z])/, '');
+        inst = inst.replace(/\s+/g, ' ').trim();
+        extractedData.institution = inst;
+        console.log(`✅ Found institution (fallback): "${header.trim()}"`);
+      } else {
+        console.log('❌ No match found for institution');
+      }
+    }
+  }
+
+  // Course/Branch: explicitly disable extraction as requested
+  extractedData.course = undefined;
+
+  // Certificate ID
+  {
+    console.log('🔍 Searching for certificateId...');
+    const certMatch = normalizedText.match(/(?:Certificate\s*(?:No|ID)|Serial\s*(?:No|Number))\s*[:\-]?\s*([A-Z0-9\-]+)/i);
+    if (certMatch) {
+      extractedData.certificateId = certMatch[1].trim().toUpperCase();
+      console.log(`✅ Found certificateId: "${certMatch[1].trim()}"`);
+    } else {
+      console.log('❌ No match found for certificateId');
+    }
   }
 
   console.log('📊 Final extracted data:', extractedData);

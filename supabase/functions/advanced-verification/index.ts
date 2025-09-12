@@ -32,9 +32,9 @@ serve(async (req) => {
 
   try {
     const supabaseClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
-      { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
+      // Use env names that are allowed for functions (cannot start with SUPABASE_)
+      Deno.env.get('PROJECT_URL') ?? '',
+      Deno.env.get('SERVICE_ROLE_KEY') ?? ''
     );
 
     const { ocr_data, user_input_data, image_hash, image_url }: VerificationRequest = await req.json();
@@ -114,13 +114,60 @@ serve(async (req) => {
     if (!studentRecords || studentRecords.length === 0) {
       console.log('❌ No student records found in database');
       // Check tampering by looking for same image hash
-      const isTampering = await checkTamperingAttempts(supabaseClient, image_hash, seatNumber || certificateId);
+      const isTampering = await checkTamperingAttempts(supabaseClient, image_hash, (seatNumber || certificateId) as string);
       console.log(`🔐 Tampering check result: ${isTampering}`);
-      
+
+      // Persist verification outcome for not-found case
+      const nfStatusText = 'REJECTED_NOT_FOUND';
+      const nfNotes = `No official record found for ${certificateId ? 'Certificate ID: ' + certificateId : 'Roll No: ' + seatNumber}.`;
+
+      // Save verification log (no student_record_id available)
+      try {
+        await supabaseClient
+          .from('verification_logs')
+          .insert({
+            verification_status: nfStatusText,
+            ocr_extracted_data: { ...ocr_data, ...user_input_data },
+            user_input_data,
+            is_db_verified: false,
+            is_tampering_suspected: isTampering,
+            notes: nfNotes,
+            image_hash: image_hash,
+            image_url: image_url,
+            mismatches: [],
+            created_at: new Date().toISOString()
+          });
+        console.log('✅ Not-found verification_log saved');
+      } catch (e) {
+        console.error('❌ Failed to save not-found verification_log:', e);
+      }
+
+      // Save verification record with forged status (enum)
+      try {
+        await supabaseClient
+          .from('verification_records')
+          .insert({
+            certificate_id: null,
+            verification_method: 'ocr',
+            status: 'forged',
+            confidence_score: null,
+            verification_data: {
+              ocr_extracted_data: { ...ocr_data, ...user_input_data },
+              mismatches: [],
+              image_hash,
+              image_url
+            },
+            notes: nfNotes
+          });
+        console.log('✅ Not-found verification_record saved');
+      } catch (e) {
+        console.error('❌ Failed to save not-found verification_record:', e);
+      }
+
       return new Response(JSON.stringify({
         is_db_verified: false,
-        verification_status: 'REJECTED_NOT_FOUND',
-        notes: `No official record found for ${certificateId ? 'Certificate ID: ' + certificateId : 'Seat No: ' + seatNumber}.`,
+        verification_status: nfStatusText,
+        notes: nfNotes,
         mismatches: [],
         is_tampering_suspected: isTampering
       }), {
@@ -140,15 +187,24 @@ serve(async (req) => {
     const mismatches: string[] = [];
     console.log('🔍 Starting field comparison...');
 
-    // Compare Name
+    // Compare Name with tolerance for minor OCR errors
     if (combinedData.name && officialRecord.name) {
       const ocrName = normalizeText(combinedData.name);
       const dbName = normalizeText(officialRecord.name);
       console.log(`👤 Name comparison - OCR: "${ocrName}" vs DB: "${dbName}"`);
       if (ocrName !== dbName) {
-        const mismatch = `Name (OCR: '${combinedData.name}', DB: '${officialRecord.name}')`;
-        mismatches.push(mismatch);
-        console.log(`❌ Name mismatch: ${mismatch}`);
+        const distance = levenshteinDistance(ocrName, dbName);
+        const maxLen = Math.max(ocrName.length, dbName.length) || 1;
+        const similarity = 1 - distance / maxLen;
+        console.log(`📐 Name similarity: ${Math.round(similarity * 100)}% (distance=${distance})`);
+        // Accept if highly similar (>= 90%) to account for single-character OCR glitches
+        if (similarity < 0.9) {
+          const mismatch = `Name (OCR: '${combinedData.name}', DB: '${officialRecord.name}')`;
+          mismatches.push(mismatch);
+          console.log(`❌ Name mismatch: ${mismatch}`);
+        } else {
+          console.log('✅ Name considered match (tolerated minor OCR error)');
+        }
       } else {
         console.log('✅ Name matches');
       }
@@ -190,18 +246,24 @@ serve(async (req) => {
       }
     }
 
-    // Compare Division
+    // Division vs Semester: avoid comparing numeric/roman semester with letter division (skip to prevent false mismatches)
     if (combinedData.semester && officialRecord.division) {
       const ocrSem = normalizeText(combinedData.semester);
       const dbDiv = normalizeText(officialRecord.division);
-      if (ocrSem !== dbDiv) {
-        mismatches.push(`Division/Semester (OCR: '${combinedData.semester}', DB: '${officialRecord.division}')`);
+      const ocrLooksNumericOrRoman = /^(?:[ivxlcdm]+|\d+)$/i.test(ocrSem);
+      const dbLooksLetterDivision = /^[a-z]$/i.test(dbDiv);
+      if (!(ocrLooksNumericOrRoman && dbLooksLetterDivision)) {
+        if (ocrSem !== dbDiv) {
+          mismatches.push(`Division/Semester (OCR: '${combinedData.semester}', DB: '${officialRecord.division}')`);
+        }
+      } else {
+        console.log('ℹ️ Skipping semester vs division comparison (different field types)');
       }
     }
 
     // Check for tampering attempts
     console.log('🔐 Checking for tampering attempts...');
-    const isTamperingAttempt = await checkTamperingAttempts(supabaseClient, image_hash, seatNumber || certificateId);
+    const isTamperingAttempt = await checkTamperingAttempts(supabaseClient, image_hash, (seatNumber || certificateId) as string);
     console.log(`🔐 Tampering check result: ${isTamperingAttempt}`);
 
     // Determine final verification status
@@ -220,6 +282,47 @@ serve(async (req) => {
       notes = `Mismatch found in fields: ${mismatches.join(', ')}`;
       isDbVerified = false;
       console.log(`❌ Verification FAILED - mismatches: ${mismatches.join(', ')}`);
+    }
+
+    // Determine enum-compatible status for verification_records
+    const enumStatus = verificationStatus === 'VERIFIED'
+      ? 'verified'
+      : (verificationStatus === 'REJECTED_MISMATCH' || verificationStatus === 'REJECTED_NOT_FOUND')
+        ? 'forged'
+        : 'pending';
+
+    // Attempt to resolve certificate UUID for linkage
+    let linkedCertificateId: string | null = null;
+    try {
+      const candidate = await supabaseClient
+        .from('certificates')
+        .select('id')
+        .eq('certificate_id', certificateId as string)
+        .maybeSingle();
+      linkedCertificateId = candidate.data?.id || officialRecord?.certificate_id || null;
+    } catch (_) {
+      linkedCertificateId = officialRecord?.certificate_id || null;
+    }
+
+    // Insert a verification record (ocr method)
+    try {
+      await supabaseClient
+        .from('verification_records')
+        .insert({
+          certificate_id: linkedCertificateId,
+          verification_method: 'ocr',
+          status: enumStatus as any,
+          confidence_score: null,
+          verification_data: {
+            ocr_extracted_data: combinedData,
+            mismatches,
+            image_hash,
+            image_url
+          },
+          notes
+        });
+    } catch (e) {
+      console.error('❌ Failed to insert verification_records:', e);
     }
 
     // Log the verification attempt
@@ -282,6 +385,28 @@ serve(async (req) => {
 // Helper function to normalize text for comparison
 function normalizeText(text: string): string {
   return text.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+// Simple Levenshtein distance for fuzzy matching of names
+function levenshteinDistance(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,       // deletion
+        dp[i][j - 1] + 1,       // insertion
+        dp[i - 1][j - 1] + cost // substitution
+      );
+    }
+  }
+  return dp[m][n];
 }
 
 // Helper function to check for tampering attempts

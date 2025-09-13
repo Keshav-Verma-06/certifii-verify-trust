@@ -224,7 +224,7 @@ export function AuthForm({ onSuccess }: AuthFormProps) {
                   <Input
                     id="full-name"
                     type="text"
-                    placeholder="John Doe"
+                    placeholder="Your Name"
                     value={signUpData.full_name}
                     onChange={(e) => setSignUpData({ ...signUpData, full_name: e.target.value })}
                     required

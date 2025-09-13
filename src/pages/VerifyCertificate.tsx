@@ -205,7 +205,7 @@ export const VerifyCertificate = () => {
                   Upload Certificate
                 </Label>
                 <div
-                  className="border-2 border-dashed border-border rounded-lg p-8 text-center cursor-pointer hover:border-primary/50 transition-colors"
+                  className="border-2 border-dashed border-border rounded-lg p-8 text-center cursor-pointer hover:border-primary/50 transition-colors align-center"
                   onDragOver={handleDragOver}
                   onDrop={handleDrop}
                   onClick={() => document.getElementById('file-upload')?.click()}
@@ -240,7 +240,7 @@ export const VerifyCertificate = () => {
               </div>
 
               {/* Certificate Details */}
-              <div className="space-y-4">
+              {/* <div className="space-y-4">
                 <h3 className="text-lg font-semibold">Certificate Details</h3>
                 
                 <div>
@@ -286,7 +286,7 @@ export const VerifyCertificate = () => {
                     onChange={(e) => setFormData({...formData, institution: e.target.value})}
                   />
                 </div>
-              </div>
+              </div> */}
 
               <Button 
                 type="submit" 
